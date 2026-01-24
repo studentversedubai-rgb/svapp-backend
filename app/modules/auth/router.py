@@ -1,65 +1,30 @@
 """
 Authentication Router
 
-Handles OTP-based authentication and registration.
-IMPORTANT: Uses Supabase Auth - no password storage in this backend.
-
-Endpoints:
-- POST /auth/send-otp: Send OTP to university email
-- POST /auth/verify-otp: Verify OTP and register/login user
-- POST /auth/refresh: Refresh JWT token
-
-NO BUSINESS LOGIC - Structure only
+Handles OTP-based authentication.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-# from app.modules.auth.schemas import (
-#     SendOTPRequest,
-#     VerifyOTPRequest,
-#     AuthResponse,
-#     RefreshTokenRequest
-# )
-# from app.modules.auth.service import AuthService
-# from app.core.security import get_current_user
+from fastapi import APIRouter, HTTPException, status
+from app.modules.auth.schemas import SendOTPRequest, VerifyOTPRequest
+from app.modules.auth.service import auth_service
 
 router = APIRouter()
 
 
 @router.post("/send-otp")
-async def send_otp():
+async def send_otp(request: SendOTPRequest):
     """
     Send OTP to user's university email
-    
-    Steps:
-    1. Validate email is university domain
-    2. Check rate limiting
-    3. Generate OTP via Supabase Auth
-    4. Send OTP email
-    5. Store OTP in Redis with expiry
-    
-    Returns:
-        Success message (never reveal if email exists)
     """
-    # TODO: Implement OTP sending logic
-    pass
+    return await auth_service.send_otp(request.email)
 
 
 @router.post("/verify-otp")
-async def verify_otp():
+async def verify_otp(request: VerifyOTPRequest):
     """
     Verify OTP and authenticate user
-    
-    Steps:
-    1. Verify OTP with Supabase Auth
-    2. If valid and new user: create user record
-    3. If valid and existing user: update last_login
-    4. Return JWT tokens
-    
-    Returns:
-        JWT access token and refresh token
     """
-    # TODO: Implement OTP verification logic
-    pass
+    return await auth_service.verify_otp(request.email, request.code)
 
 
 @router.post("/refresh")

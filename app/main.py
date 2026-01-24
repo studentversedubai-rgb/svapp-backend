@@ -3,27 +3,12 @@ StudentVerse Backend - FastAPI Application Entry Point
 
 This is the main application file that initializes FastAPI,
 registers all routers, and configures middleware.
-
-NO BUSINESS LOGIC - Structure only
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-# from app.core.config import settings
-# from app.core.logging import setup_logging
-# from app.core.database import init_db
-# from app.core.redis import init_redis
-
-# Import routers (placeholder imports)
-# from app.modules.auth.router import router as auth_router
-# from app.modules.users.router import router as users_router
-# from app.modules.offers.router import router as offers_router
-# from app.modules.entitlements.router import router as entitlements_router
-# from app.modules.validation.router import router as validation_router
-# from app.modules.analytics.router import router as analytics_router
-# from app.modules.orbit.router import router as orbit_router
-# from app.modules.pay.router import router as pay_router
-
+from app.core.redis import redis_manager
+from app.modules.auth.router import router as auth_router
 
 def create_app() -> FastAPI:
     """
@@ -42,7 +27,6 @@ def create_app() -> FastAPI:
     # ================================
     # CORS Configuration
     # ================================
-    # TODO: Load allowed origins from settings
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],  # Configure in production
@@ -57,16 +41,8 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def startup_event():
         """Initialize connections and resources"""
-        # TODO: Initialize database connection
-        # await init_db()
-        
-        # TODO: Initialize Redis connection
-        # await init_redis()
-        
-        # TODO: Setup logging
-        # setup_logging()
-        
-        pass
+        redis_manager.connect()
+        print("INFO: Startup complete")
     
     # ================================
     # Shutdown Events
@@ -74,35 +50,13 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown_event():
         """Cleanup connections and resources"""
-        # TODO: Close database connections
-        # TODO: Close Redis connections
-        pass
-    
-    # ================================
-    # Health Check
-    # ================================
-    @app.get("/health")
-    async def health_check():
-        """Health check endpoint for Railway and monitoring"""
-        return {
-            "status": "healthy",
-            "service": "studentverse-backend",
-            "version": "1.0.0"
-        }
+        redis_manager.disconnect()
+        print("INFO: Shutdown complete")
     
     # ================================
     # Register Routers
     # ================================
-    # TODO: Register all module routers with appropriate prefixes and tags
-    
-    # app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
-    # app.include_router(users_router, prefix="/api/v1/users", tags=["Users"])
-    # app.include_router(offers_router, prefix="/api/v1/offers", tags=["Offers"])
-    # app.include_router(entitlements_router, prefix="/api/v1/entitlements", tags=["Entitlements"])
-    # app.include_router(validation_router, prefix="/api/v1/validation", tags=["Validation"])
-    # app.include_router(analytics_router, prefix="/api/v1/analytics", tags=["Analytics"])
-    # app.include_router(orbit_router, prefix="/api/v1/orbit", tags=["SV Orbit"])
-    # app.include_router(pay_router, prefix="/api/v1/pay", tags=["SV Pay"])
+    app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
     
     return app
 
