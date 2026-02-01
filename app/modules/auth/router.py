@@ -59,6 +59,8 @@ async def login(request: LoginRequest):
 async def get_me(current_user: Dict = Depends(get_current_user)):
     """
     Get current user profile (protected route)
+    
+    Requires: Bearer token in Authorization header
     """
     # Build profile response from user data
     user_profile = UserProfile(
@@ -85,6 +87,8 @@ async def get_me(current_user: Dict = Depends(get_current_user)):
 async def logout(current_user: Dict = Depends(get_current_user)):
     """
     Logout user (protected route)
+    
+    Requires: Bearer token in Authorization header
     """
     # Note: JWT tokens are stateless, so logout is handled client-side
     # In future, could implement token blacklisting with Redis

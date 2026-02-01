@@ -1,34 +1,70 @@
 """
-Offers Models
+Offers Models - Phase 2
 
-NO BUSINESS LOGIC - Structure only
+Database models for merchants, offers, and categories.
+Implements time-based and day-based validity rules.
+
+NOTE: Using Supabase directly, not SQLAlchemy ORM.
+These are just reference schemas for the database tables.
 """
 
-# from sqlalchemy import Column, String, DateTime, Boolean, Integer, Text
-# from sqlalchemy.sql import func
-# from app.core.database import Base
+# Database schema reference (create these tables in Supabase):
 
+# CREATE TABLE merchants (
+#   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+#   name VARCHAR NOT NULL,
+#   description TEXT,
+#   logo_url VARCHAR,
+#   latitude FLOAT,
+#   longitude FLOAT,
+#   address TEXT,
+#   is_active BOOLEAN DEFAULT TRUE,
+#   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+#   updated_at TIMESTAMP WITH TIME ZONE
+# );
 
-# class Offer(Base):
-#     """Offer model"""
-#     __tablename__ = "offers"
-#     
-#     id = Column(String, primary_key=True)
-#     partner_id = Column(String, nullable=False, index=True)
-#     partner_name = Column(String, nullable=False)
-#     title = Column(String, nullable=False)
-#     description = Column(Text, nullable=False)
-#     category = Column(String, nullable=False)
-#     offer_type = Column(String, nullable=False)
-#     discount_value = Column(String, nullable=True)
-#     terms_conditions = Column(Text, nullable=False)
-#     valid_from = Column(DateTime(timezone=True), nullable=False)
-#     valid_until = Column(DateTime(timezone=True), nullable=False)
-#     image_url = Column(String, nullable=True)
-#     is_active = Column(Boolean, default=True)
-#     max_claims_per_user = Column(Integer, nullable=True)
-#     total_claims = Column(Integer, default=0)
-#     created_at = Column(DateTime(timezone=True), server_default=func.now())
-#     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+# CREATE TABLE categories (
+#   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+#   name VARCHAR UNIQUE NOT NULL,
+#   slug VARCHAR UNIQUE NOT NULL,
+#   description TEXT,
+#   icon_url VARCHAR,
+#   sort_order INTEGER DEFAULT 0,
+#   is_active BOOLEAN DEFAULT TRUE,
+#   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+# );
 
-# TODO: Define Offer model
+# CREATE TABLE offers (
+#   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+#   merchant_id UUID REFERENCES merchants(id),
+#   category_id UUID REFERENCES categories(id),
+#   title VARCHAR NOT NULL,
+#   description TEXT NOT NULL,
+#   terms_conditions TEXT,
+#   offer_type VARCHAR NOT NULL,
+#   discount_value VARCHAR,
+#   original_price FLOAT,
+#   discounted_price FLOAT,
+#   image_url VARCHAR,
+#   images TEXT[],
+#   valid_from TIMESTAMP WITH TIME ZONE NOT NULL,
+#   valid_until TIMESTAMP WITH TIME ZONE NOT NULL,
+#   time_valid_from TIME,
+#   time_valid_until TIME,
+#   valid_days_of_week INTEGER[],
+#   max_claims_per_user INTEGER,
+#   total_claims INTEGER DEFAULT 0,
+#   max_total_claims INTEGER,
+#   is_active BOOLEAN DEFAULT TRUE,
+#   is_featured BOOLEAN DEFAULT FALSE,
+#   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+#   updated_at TIMESTAMP WITH TIME ZONE
+# );
+
+# CREATE INDEX idx_offers_merchant_id ON offers(merchant_id);
+# CREATE INDEX idx_offers_category_id ON offers(category_id);
+# CREATE INDEX idx_offers_is_active ON offers(is_active);
+# CREATE INDEX idx_offers_valid_from ON offers(valid_from);
+# CREATE INDEX idx_offers_valid_until ON offers(valid_until);
+# CREATE INDEX idx_offers_created_at ON offers(created_at);
+# CREATE INDEX idx_merchants_is_active ON merchants(is_active);

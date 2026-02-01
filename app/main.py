@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.redis import redis_manager
 from app.modules.auth.router import router as auth_router
+from app.modules.offers.router import router as offers_router
 
 def create_app() -> FastAPI:
     """
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     # Register Routers
     # ================================
     app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
+    app.include_router(offers_router, prefix="/offers", tags=["Offers"])
     
     return app
 

@@ -57,6 +57,130 @@ GET    /api/v1/users/me
 PATCH  /api/v1/users/me
 ```
 
+```
+
+---
+
+## Phase 2: Offers & Home Experience ✅ **IMPLEMENTED**
+
+### Goal
+Implement offer browsing, search, and home feed experience
+
+### Status
+**COMPLETED** - All endpoints implemented and tested
+
+### Deliverables
+
+#### 1. Database Models
+- [x] Merchant model with location data
+- [x] Offer model with time/day validity rules
+- [x] Category model for offer organization
+- [x] Relationships between models
+
+#### 2. Offer Eligibility Logic
+- [x] Date range validation
+- [x] Time window validation (e.g., "Happy Hour 5-7 PM")
+- [x] Day of week validation (e.g., "Weekdays only")
+- [x] Active status checking
+- [x] Merchant active status checking
+
+#### 3. Home Feed Endpoint
+- [x] GET /offers/home
+- [x] Returns eligible offers for authenticated user
+- [x] Filters by date, time, and day validity
+- [x] Sorts by distance (if location provided) or created_at
+- [x] Pagination support
+- [x] JWT authentication required
+
+#### 4. Search Endpoint
+- [x] GET /offers/search
+- [x] Keyword search (title + description)
+- [x] Category filtering
+- [x] Distance radius filtering
+- [x] Input sanitization
+- [x] Pagination support
+- [x] Rate limiting
+
+#### 5. Nearby Offers Endpoint
+- [x] GET /offers/nearby
+- [x] Requires latitude & longitude
+- [x] Radius-based filtering (max 50km)
+- [x] Sorted by distance (nearest first)
+- [x] Haversine distance calculation
+
+#### 6. Offer Detail Endpoint
+- [x] GET /offers/{offer_id}
+- [x] Returns full offer details
+- [x] Validates offer is active & eligible
+- [x] Optional distance calculation
+- [x] Hides internal sensitive fields
+
+#### 7. Categories Endpoint
+- [x] GET /offers/categories/list
+- [x] Returns all active categories
+- [x] Sorted by sort_order
+
+### API Endpoints
+```
+GET    /offers/home                  # Home feed with optional location
+GET    /offers/search                # Search with filters
+GET    /offers/nearby                # Location-based search
+GET    /offers/{offer_id}            # Offer details
+GET    /offers/categories/list       # All categories
+```
+
+### Security Features
+- ✅ JWT authentication on all endpoints
+- ✅ User ID derived from JWT (never from request)
+- ✅ Rate limiting (60-100 req/min depending on endpoint)
+- ✅ Input sanitization for search queries
+- ✅ Coordinate validation
+- ✅ Max radius enforcement (50km)
+- ✅ Defensive error handling
+
+### Business Logic Implemented
+- ✅ **Time-based validity**: Offers can be restricted to specific hours (e.g., 17:00-19:00)
+- ✅ **Day-based validity**: Offers can be restricted to specific days (e.g., weekdays only)
+- ✅ **Distance calculation**: Haversine formula for accurate distance
+- ✅ **Eligibility filtering**: Multi-layered filtering (active, date, time, day)
+- ✅ **Sorting logic**: Distance-first (if location), then created_at
+
+### Testing
+- [x] Unit tests for eligibility logic
+- [x] Unit tests for distance calculation
+- [x] Integration tests for all endpoints
+- [x] Tests for invalid/expired offers
+- [x] Tests for authentication requirements
+- [x] Tests for input validation
+
+### Success Criteria
+- ✅ Users can browse offers on home feed
+- ✅ Users can search offers by keyword
+- ✅ Users can filter by category
+- ✅ Users can find nearby offers
+- ✅ Distance calculated accurately
+- ✅ Time/day restrictions enforced
+- ✅ Only active, eligible offers shown
+- ✅ All endpoints require authentication
+- ✅ No user_id accepted from request body
+
+### Assumptions & Constraints
+- **No redemption logic**: Claiming/redeeming is Phase 0B
+- **No QR codes**: QR generation is Phase 0B
+- **No SV Pay**: Payment logic is future phase
+- **No SV Orbit**: AI recommendations is Phase 1
+- **Phase 1 code untouched**: All auth and user logic preserved
+- **JWT-only auth**: User identity always from token
+
+### Implementation Notes
+- All business logic in `service.py` (thin routers)
+- Pydantic schemas for all requests/responses
+- Comprehensive inline comments
+- Follows existing project conventions
+- Database queries use Supabase client
+- Distance calculation uses Haversine formula
+- Time/day validation happens in-memory after DB query
+
 ---
 
 ## Phase 0B: Core Features (Weeks 3-4)

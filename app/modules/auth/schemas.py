@@ -30,7 +30,7 @@ class LoginRequest(BaseModel):
 class UserData(BaseModel):
     """User data in response"""
     id: str = Field(..., description="User UUID")
-    name: str = Field(..., description="User's full name")
+    name: Optional[str] = Field(default="", description="User's full name")
     email: str = Field(..., description="User's email")
 
 class AuthResponse(BaseModel):
