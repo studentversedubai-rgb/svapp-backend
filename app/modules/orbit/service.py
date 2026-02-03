@@ -1,34 +1,194 @@
 """
 SV Orbit Service
 
-Orchestrates AI-powered plan generation.
-IMPORTANT: Retrieval-only, no hallucinations.
-
-NO BUSINESS LOGIC - Structure only
+Orchestrates conversational AI-powered plan generation.
+Uses conversation memory and intelligent intent detection.
 """
 
-from typing import List, Dict, Any
-# from app.modules.orbit.retrieval import OfferRetrieval
-# from app.modules.orbit.llm import LLMPresenter
+import logging
+import uuid
+from typing import List, Dict, Any, Optional
+from app.core.config import Settings
+from app.modules.orbit.retrieval import OfferRetrieval
+from app.modules.orbit.llm import LLMPresenter
+from app.modules.orbit.conversation import conversation_manager
+from app.modules.orbit.schemas import OrbitChatResponse, OrbitOfferCard
+
+logger = logging.getLogger(__name__)
 
 
 class OrbitService:
     """
-    Orchestrates plan generation
+    Orchestrates conversational AI plan generation
     
     Flow:
-    1. Parse user intent
-    2. Retrieve relevant offers (retrieval-only)
-    3. Score offers for relevance
-    4. Select best offers for plan
-    5. Use LLM to present plan naturally
+    1. Load conversation history
+    2. LLM analyzes intent (chat vs offers)
+    3. Generate appropriate response
+    4. Save to conversation history
+    5. Return structured response
     """
     
-    def __init__(self):
+    def __init__(self, settings: Settings = None):
         """Initialize with retrieval and LLM components"""
-        # self.retrieval = OfferRetrieval()
-        # self.llm = LLMPresenter()
-        pass
+        if settings is None:
+            settings = Settings()
+        
+        self.settings = settings
+        self.retrieval = OfferRetrieval()
+        self.llm = LLMPresenter(settings)
+    
+    async def chat(
+        self,
+        user_id: str,
+        message: str,
+        session_id: Optional[str] = None
+    ) -> OrbitChatResponse:
+        """
+        Chat with Orbit AI assistant (conversational)
+        
+        Args:
+            user_id: User UUID
+            message: User's message
+            session_id: Optional session ID for conversation continuity
+            
+        Returns:
+            Orbit's response with recommended offers (if applicable)
+        """
+        try:
+            # Generate session_id if not provided
+            if not session_id:
+                session_id = str(uuid.uuid4())
+                logger.info(f"Generated new session: {session_id}")
+            
+            logger.info(f"Orbit chat request from user {user_id}, session {session_id}: {message}")
+            
+            # Step 1: Load conversation history
+            history = conversation_manager.format_history_for_llm(user_id, session_id, limit=10)
+            
+            logger.debug(f"Loaded {len(history)} messages from history")
+            
+            # Step 2: Analyze intent using LLM
+            intent_analysis = await self.llm.analyze_intent(message, history)
+            
+            intent = intent_analysis.get("intent", "offers")
+            needs_retrieval = intent_analysis.get("needs_retrieval", True)
+            
+            logger.info(f"Intent: {intent}, Needs retrieval: {needs_retrieval}")
+            
+            # Initialize variables
+            offers = []
+            validated_plans = []
+            
+            # Step 3: Generate response based on intent
+            if needs_retrieval and (intent == "offers" or intent == "offers_vague"):
+                # User wants offers - retrieve and present
+                
+                # For vague requests, use broad search terms
+                if intent == "offers_vague":
+                    # Try to extract context or use popular categories
+                    search_query = f"{message} food drinks entertainment"
+                    logger.info(f"Vague request - using broad search: {search_query}")
+                else:
+                    search_query = message
+                
+                offers = await self.retrieval.retrieve_offers(
+                    intent=search_query,
+                    limit=self.settings.ORBIT_MAX_RESULTS
+                )
+                
+                logger.info(f"Retrieved {len(offers)} offers from database")
+                
+                if offers:
+                    # Generate response with offers using history
+                    llm_response = await self.llm.generate_response_with_history(
+                        user_message=message,
+                        offers=offers,
+                        conversation_history=history
+                    )
+                    
+                    # Validate offer IDs
+                    validated_plans = self._validate_offer_ids(
+                        llm_response.get("plans", []),
+                        offers
+                    )
+                    
+                    response_content = llm_response.get("content", "Here's what I found for you!")
+                    
+                else:
+                    # No offers found
+                    response_content = "Hmm, I couldn't find any offers matching that right now. 🤔 Want to try asking about something else? Like coffee, food, or entertainment?"
+            
+            else:
+                # Pure conversation - no offers needed
+                response_content = await self.llm.generate_conversation(message, history)
+            
+            # Step 4: Save messages to history
+            conversation_manager.add_message(user_id, session_id, "user", message)
+            conversation_manager.add_message(user_id, session_id, "assistant", response_content)
+            
+            # Step 5: Build and return response
+            response = OrbitChatResponse(
+                content=response_content,
+                plans=validated_plans,
+                session_id=session_id,
+                metadata={
+                    "intent": intent,
+                    "total_retrieved": len(offers) if needs_retrieval else 0,
+                    "total_recommended": len(validated_plans),
+                    "conversation_length": conversation_manager.get_message_count(user_id, session_id)
+                }
+            )
+            
+            logger.info(f"Response generated: {len(validated_plans)} plans, intent={intent}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error in Orbit chat: {e}", exc_info=True)
+            # Return friendly error response
+            return OrbitChatResponse(
+                content="Oops! Something went wrong on my end. Can you try asking that again? 😅",
+                plans=[],
+                session_id=session_id or str(uuid.uuid4()),
+                metadata={"error": str(e)}
+            )
+    
+    def _validate_offer_ids(
+        self,
+        llm_plans: List[Dict],
+        retrieved_offers: List[Dict]
+    ) -> List[OrbitOfferCard]:
+        """
+        Validate that LLM only used offer IDs from retrieved data
+        
+        CRITICAL: This prevents hallucinations
+        
+        Args:
+            llm_plans: Plans returned by LLM
+            retrieved_offers: Offers retrieved from database
+            
+        Returns:
+            Validated offer cards
+        """
+        # Build set of valid offer IDs
+        valid_ids = {offer.get('id') for offer in retrieved_offers}
+        
+        validated_plans = []
+        for plan in llm_plans:
+            offer_id = plan.get('id')
+            
+            # Only include if ID exists in retrieved offers
+            if offer_id in valid_ids:
+                try:
+                    validated_plans.append(OrbitOfferCard(**plan))
+                except Exception as e:
+                    logger.warning(f"Failed to validate plan: {e}")
+                    continue
+            else:
+                logger.warning(f"LLM hallucinated offer ID: {offer_id}")
+        
+        logger.info(f"Validated {len(validated_plans)}/{len(llm_plans)} plans")
+        return validated_plans
     
     async def generate_plan(
         self,
@@ -39,37 +199,16 @@ class OrbitService:
         location: str = None
     ) -> dict:
         """
-        Generate activity plan
+        Generate activity plan (Legacy method)
         
-        Steps:
-        1. Parse intent
-        2. Retrieve candidate offers
-        3. Score offers
-        4. Select top offers
-        5. Generate presentation
-        
-        Args:
-            user_id: User UUID
-            intent: User's intent/goal
-            preferences: Optional preferences
-            budget: Optional budget constraint
-            location: Optional location
-            
-        Returns:
-            Generated plan with offers
+        Redirects to chat method
         """
-        # TODO: Parse intent
-        # TODO: Retrieve offers using retrieval service
-        # TODO: Score offers for relevance
-        # TODO: Select best offers
-        # TODO: Generate LLM presentation
-        # TODO: Save plan to database
-        pass
+        response = await self.chat(user_id, intent)
+        return response.dict()
     
     async def get_plan(self, plan_id: str) -> dict:
-        """Get saved plan"""
-        # TODO: Retrieve plan from database
-        pass
+        """Get saved plan (Not implemented yet)"""
+        raise NotImplementedError("Plan storage not yet implemented")
     
     async def submit_feedback(
         self,
@@ -79,14 +218,8 @@ class OrbitService:
         comments: str = None,
         used_offers: List[str] = None
     ):
-        """
-        Store plan feedback
-        
-        Used to improve future recommendations
-        """
-        # TODO: Store feedback in database
-        # TODO: Update scoring algorithm based on feedback
-        pass
+        """Store plan feedback (Not implemented yet)"""
+        raise NotImplementedError("Feedback storage not yet implemented")
     
     def score_offers(
         self,
@@ -94,17 +227,5 @@ class OrbitService:
         intent: str,
         preferences: Dict[str, Any] = None
     ) -> List[dict]:
-        """
-        Score offers for relevance to user intent
-        
-        Args:
-            offers: List of candidate offers
-            intent: User's intent
-            preferences: User preferences
-            
-        Returns:
-            Offers with relevance scores
-        """
-        # TODO: Implement scoring algorithm
-        # TODO: Consider: category match, user history, popularity, etc.
-        pass
+        """Score offers (handled by retrieval layer)"""
+        return offers

@@ -70,11 +70,9 @@ isort==5.13.2
 alembic==1.13.1
 
 # ================================
-# SV ORBIT (AI/LLM) - Placeholder
+# SV ORBIT (AI/LLM)
 # ================================
-# openai==1.10.0
-# langchain==0.1.0
-# tiktoken==0.5.2
+openai==1.58.1
 
 # ================================
 # SV PAY (Payments) - Placeholder

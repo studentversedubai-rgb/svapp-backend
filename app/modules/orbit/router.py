@@ -9,76 +9,83 @@ IMPORTANT CONSTRAINTS:
 - Uses scoring + orchestration + LLM presentation
 
 Endpoints:
-- POST /orbit/plans: Generate activity plan
-- GET /orbit/plans/{plan_id}: Get saved plan
-- POST /orbit/plans/{plan_id}/feedback: Submit feedback on plan
-
-NO BUSINESS LOGIC - Structure only
+- POST /orbit/chat: Chat with Orbit AI
 """
 
-from fastapi import APIRouter, Depends
-# from app.core.security import get_current_user
-# from app.core.config import settings
-# from app.modules.orbit.schemas import (
-#     GeneratePlanRequest,
-#     PlanResponse,
-#     PlanFeedbackRequest
-# )
-# from app.modules.orbit.service import OrbitService
+import logging
+from fastapi import APIRouter, Depends, HTTPException
+from app.core.security import get_current_user
+from app.core.config import Settings
+from app.modules.orbit.schemas import (
+    OrbitChatRequest,
+    OrbitChatResponse
+)
+from app.modules.orbit.service import OrbitService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+# Initialize settings
+settings = Settings()
 
 
 # Feature flag check
-# if not settings.FEATURE_SV_ORBIT_ENABLED:
-#     # Router is disabled via feature flag
-#     pass
+if not settings.FEATURE_SV_ORBIT_ENABLED:
+    logger.warning("SV Orbit feature is disabled")
 
 
-@router.post("/plans")
-async def generate_plan():
+@router.post("/chat", response_model=OrbitChatResponse)
+async def orbit_chat(
+    request: OrbitChatRequest,
+    current_user: dict = Depends(get_current_user)
+):
     """
-    Generate AI-powered activity plan
+    Chat with Orbit AI assistant
     
-    Steps:
-    1. Parse user intent (e.g., "date night", "study session")
-    2. Retrieve relevant partner offers (retrieval-only)
-    3. Score offers based on relevance
-    4. Orchestrate plan with multiple offers
-    5. Use LLM to present plan in natural language
+    Orbit uses RAG (Retrieval-Augmented Generation) to recommend real offers:
+    - Retrieves offers from database (no hallucinations)
+    - Uses LLM for natural, witty presentation
     
-    Returns:
-        Generated plan with partner offers
-    """
-    # TODO: Implement plan generation
-    # TODO: Use retrieval service to get offers
-    # TODO: Use scoring to rank offers
-    # TODO: Use LLM to format presentation
-    pass
-
-
-@router.get("/plans/{plan_id}")
-async def get_plan():
-    """
-    Get saved plan by ID
+    **Two-Layer Architecture:**
+    1. **Retrieval Layer**: Queries database for relevant offers
+    2. **Generation Layer**: LLM selects best 3 and formats response
+    
+    Args:
+        request: User's message to Orbit
+        current_user: Authenticated user (injected)
     
     Returns:
-        Previously generated plan
+        Orbit's response with recommended offers
+        
+    Raises:
+        HTTPException: 500 if service error occurs
     """
-    # TODO: Retrieve plan from database
-    pass
-
-
-@router.post("/plans/{plan_id}/feedback")
-async def submit_plan_feedback():
-    """
-    Submit feedback on generated plan
-    
-    Used to improve future recommendations
-    
-    Returns:
-        Success confirmation
-    """
-    # TODO: Store feedback
-    # TODO: Use for improving scoring algorithm
-    pass
+    try:
+        # Check feature flag
+        if not settings.FEATURE_SV_ORBIT_ENABLED:
+            raise HTTPException(
+                status_code=503,
+                detail="Orbit is currently unavailable"
+            )
+        
+        # Initialize service
+        service = OrbitService(settings)
+        
+        # Get response from Orbit (service handles session_id generation if needed)
+        response = await service.chat(
+            user_id=current_user["id"],
+            message=request.message,
+            session_id=request.session_id
+        )
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in orbit chat: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Something went wrong with Orbit. Please try again! 😅"
+        )

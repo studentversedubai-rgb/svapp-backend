@@ -1,12 +1,42 @@
 """
 SV Orbit Schemas
-
-NO BUSINESS LOGIC - Structure only
 """
 
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+
+
+# ================================
+# CHAT SCHEMAS (New)
+# ================================
+
+class OrbitChatRequest(BaseModel):
+    """Request for Orbit chat endpoint"""
+    message: str = Field(..., min_length=1, max_length=500, description="User's message to Orbit")
+    session_id: Optional[str] = Field(None, description="Session ID for conversation continuity")
+
+
+class OrbitOfferCard(BaseModel):
+    """Offer card in Orbit response"""
+    id: str
+    title: str
+    description: str
+    tags: Dict[str, Any] = Field(default_factory=dict)
+    highlights: List[str] = Field(default_factory=list)
+
+
+class OrbitChatResponse(BaseModel):
+    """Response from Orbit chat"""
+    content: str = Field(..., description="Orbit's intro message")
+    plans: List[OrbitOfferCard] = Field(default_factory=list)
+    session_id: Optional[str] = Field(None, description="Session ID for conversation tracking")
+    metadata: Optional[Dict[str, Any]] = None
+
+
+# ================================
+# PLAN SCHEMAS (Legacy)
+# ================================
 
 
 class GeneratePlanRequest(BaseModel):

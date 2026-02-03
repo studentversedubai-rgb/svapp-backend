@@ -79,10 +79,17 @@ class Settings(BaseSettings):
     FEATURE_ANALYTICS_ENABLED: bool = True
     
     # ================================
-    # SV ORBIT (Placeholder)
+    # EMAIL SERVICE (RESEND)
     # ================================
-    # OPENAI_API_KEY: str = ""
-    # ORBIT_MAX_RESULTS: int = 10
+    RESEND_API_KEY: str = ""
+    RESEND_FROM: str = "auth@loginotp.studentverse.app"
+    
+    # ================================
+    # SV ORBIT
+    # ================================
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "google/gemini-2.0-flash-001"
+    ORBIT_MAX_RESULTS: int = 10
     
     # ================================
     # SV PAY (Placeholder)

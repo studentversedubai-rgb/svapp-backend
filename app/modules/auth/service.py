@@ -103,7 +103,7 @@ class AuthService:
 
     async def verify_otp(self, email: str, code: str) -> Dict[str, str]:
         """
-        Verify OTP code
+        Verify OTP code and create/authenticate user
         """
         redis_key = f"sv:app:auth:otp:{email}"
         
@@ -123,12 +123,95 @@ class AuthService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid access code"
             )
-            
-        # 4. If match -> Success
-        # Optional: Delete key to prevent reuse
-        redis_manager.delete(redis_key)
         
-        return {"status": "success", "message": "Verified"}
+        # 4. OTP verified! Now create/login user with Supabase
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+        
+        try:
+            # Create a temporary password from OTP
+            temp_password = f"OTP_{code}_{email}_TEMP_PASSWORD"
+            
+            # Try to sign up new user (will fail if exists)
+            try:
+                auth_response = supabase.auth.sign_up({
+                    "email": email,
+                    "password": temp_password
+                })
+                logger.info(f"Created new user via OTP: {email}")
+            except Exception as e:
+                # User probably exists, try signing in
+                logger.info(f"User exists, attempting sign in: {email}")
+                try:
+                    auth_response = supabase.auth.sign_in_with_password({
+                        "email": email,
+                        "password": temp_password
+                    })
+                except:
+                    # Password mismatch - create new signup
+                    logger.info(f"Password mismatch, creating fresh account")
+                    auth_response = supabase.auth.sign_up({
+                        "email": email,
+                        "password": temp_password
+                    })
+            
+            # Validate response
+            if not auth_response or not auth_response.user:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to authenticate user"
+                )
+            
+            user_id = auth_response.user.id
+            
+            # Get access token
+            if auth_response.session and auth_response.session.access_token:
+                access_token = auth_response.session.access_token
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No session created. Check Supabase email confirmation settings."
+                )
+            
+            # Sync to public.users table
+            try:
+                user_check = supabase.table("users").select("*").eq("id", user_id).execute()
+                if not user_check.data:
+                    supabase.table("users").insert({
+                        "id": user_id,
+                        "email": email
+                    }).execute()
+                    logger.info(f"Created user profile in public.users: {email}")
+            except Exception as e:
+                logger.error(f"Error syncing to public.users: {e}")
+            
+            # Delete OTP from Redis
+            redis_manager.delete(redis_key)
+            
+            # Return token!
+            return {
+                "status": "success",
+                "message": "Verified",
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user": {
+                    "id": user_id,
+                    "email": email
+                }
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"OTP verification failed: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Authentication error: {str(e)}"
+            )
 
     async def register(self, email: str, password: str, name: str) -> Dict:
         """
