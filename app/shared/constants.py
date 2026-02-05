@@ -42,13 +42,20 @@ OTP_MAX_ATTEMPTS = 3
 EMAIL_REGEX = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
 
 # ================================
-# ENTITLEMENTS
+# ENTITLEMENTS & REDEMPTION - PHASE 3
 # ================================
-# TODO: Define entitlement states
-# ENTITLEMENT_STATE_AVAILABLE = "available"
-# ENTITLEMENT_STATE_CLAIMED = "claimed"
-# ENTITLEMENT_STATE_REDEEMED = "redeemed"
-# ENTITLEMENT_STATE_EXPIRED = "expired"
+# QR Token Settings
+QR_PROOF_TOKEN_TTL_SECONDS = 30  # Short-lived proof token (20-30s)
+QR_TOKEN_LENGTH = 32  # Secure random token length
+
+# Redemption Settings
+VOID_WINDOW_HOURS = 2  # Void allowed within 2 hours
+MAX_DAILY_CLAIMS_PER_OFFER = 1  # One entitlement per user per offer per day
+
+# Redis Key Prefixes (Namespacing)
+REDIS_PREFIX_QR_TOKEN = "sv:app:redeem:token:"  # QR proof tokens
+REDIS_PREFIX_DAILY_CLAIM = "sv:app:claim:daily:"  # Daily usage tracking
+REDIS_PREFIX_OTP = "sv:app:otp:"  # OTP storage (existing)
 
 # ================================
 # SV ORBIT

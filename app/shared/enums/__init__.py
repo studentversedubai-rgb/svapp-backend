@@ -26,15 +26,21 @@ class UserStatus(str, Enum):
 
 class EntitlementState(str, Enum):
     """
-    Entitlement lifecycle states
+    Entitlement lifecycle states - Phase 3
     Managed by state machine in entitlements module
+    
+    Lifecycle:
+    - ACTIVE: Entitlement claimed and ready for redemption
+    - PENDING_CONFIRMATION: QR validated, awaiting merchant confirmation
+    - USED: Successfully redeemed
+    - VOIDED: Reversed within void window
+    - EXPIRED: Time-based expiry (end of day)
     """
-    AVAILABLE = "available"
-    CLAIMED = "claimed"
-    RESERVED = "reserved"
-    REDEEMED = "redeemed"
+    ACTIVE = "active"
+    PENDING_CONFIRMATION = "pending_confirmation"
+    USED = "used"
+    VOIDED = "voided"
     EXPIRED = "expired"
-    CANCELLED = "cancelled"
 
 
 class OfferCategory(str, Enum):

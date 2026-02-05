@@ -1,26 +1,23 @@
 """
-Entitlement State Machine
+Entitlement State Machine - Phase 3
 
-CRITICAL: Manages all state transitions for entitlements.
-Ensures business rules are enforced for state changes.
+Manages state transitions for entitlements with business rule enforcement.
 
 State Flow:
-    AVAILABLE (offer exists)
+    ACTIVE (claimed)
          ↓
-    CLAIMED (user claims offer)
+    PENDING_CONFIRMATION (QR validated)
          ↓
-    RESERVED (user prepares to redeem)
-         ↓
-    REDEEMED (validator confirms)
+    USED (confirmed by merchant)
     
+    USED → VOIDED (within 2 hours)
     Any state → EXPIRED (time-based)
-    Any state → CANCELLED (user/admin action)
-
-NO BUSINESS LOGIC - Structure only
 """
 
-from typing import Optional, Dict, Set
-# from app.shared.enums import EntitlementState
+from typing import Dict, Set, Optional
+from datetime import datetime, timedelta
+from app.shared.enums import EntitlementState
+from app.shared.constants import VOID_WINDOW_HOURS
 
 
 class EntitlementStateMachine:
@@ -31,29 +28,28 @@ class EntitlementStateMachine:
     """
     
     # Define valid state transitions
-    # VALID_TRANSITIONS: Dict[EntitlementState, Set[EntitlementState]] = {
-    #     EntitlementState.AVAILABLE: {EntitlementState.CLAIMED},
-    #     EntitlementState.CLAIMED: {
-    #         EntitlementState.RESERVED,
-    #         EntitlementState.EXPIRED,
-    #         EntitlementState.CANCELLED
-    #     },
-    #     EntitlementState.RESERVED: {
-    #         EntitlementState.REDEEMED,
-    #         EntitlementState.CLAIMED,  # Cancel reservation
-    #         EntitlementState.EXPIRED,
-    #         EntitlementState.CANCELLED
-    #     },
-    #     EntitlementState.REDEEMED: set(),  # Terminal state
-    #     EntitlementState.EXPIRED: set(),   # Terminal state
-    #     EntitlementState.CANCELLED: set()  # Terminal state
-    # }
+    VALID_TRANSITIONS: Dict[EntitlementState, Set[EntitlementState]] = {
+        EntitlementState.ACTIVE: {
+            EntitlementState.PENDING_CONFIRMATION,
+            EntitlementState.EXPIRED
+        },
+        EntitlementState.PENDING_CONFIRMATION: {
+            EntitlementState.USED,
+            EntitlementState.ACTIVE,  # Cancel validation
+            EntitlementState.EXPIRED
+        },
+        EntitlementState.USED: {
+            EntitlementState.VOIDED  # Only within void window
+        },
+        EntitlementState.VOIDED: set(),  # Terminal state
+        EntitlementState.EXPIRED: set()  # Terminal state
+    }
     
     def __init__(self):
         """Initialize state machine"""
         pass
     
-    def can_transition(self, from_state: str, to_state: str) -> bool:
+    def can_transition(self, from_state: EntitlementState, to_state: EntitlementState) -> bool:
         """
         Check if state transition is valid
         
@@ -64,38 +60,48 @@ class EntitlementStateMachine:
         Returns:
             True if transition is allowed
         """
-        # TODO: Check if transition is in VALID_TRANSITIONS
-        pass
+        if from_state not in self.VALID_TRANSITIONS:
+            return False
+        
+        return to_state in self.VALID_TRANSITIONS[from_state]
     
-    def transition(
+    def validate_transition(
         self,
-        entitlement_id: str,
-        from_state: str,
-        to_state: str,
+        from_state: EntitlementState,
+        to_state: EntitlementState,
         metadata: Optional[dict] = None
-    ) -> bool:
+    ) -> tuple[bool, Optional[str]]:
         """
-        Execute state transition
+        Validate state transition with business rules
         
         Args:
-            entitlement_id: Entitlement UUID
             from_state: Current state
             to_state: New state
-            metadata: Optional transition metadata
+            metadata: Optional transition metadata (e.g., timestamps)
             
         Returns:
-            True if transition successful
-            
-        Raises:
-            ValueError: If transition is invalid
+            (is_valid, error_message)
         """
-        # TODO: Validate transition is allowed
-        # TODO: Update entitlement state in database
-        # TODO: Log state change
-        # TODO: Trigger any side effects (notifications, analytics, etc.)
-        pass
+        # Check if transition is allowed
+        if not self.can_transition(from_state, to_state):
+            return False, f"Invalid transition from {from_state.value} to {to_state.value}"
+        
+        # Special validation for VOID
+        if to_state == EntitlementState.VOIDED:
+            if not metadata or 'used_at' not in metadata:
+                return False, "Missing used_at timestamp for void validation"
+            
+            used_at = metadata['used_at']
+            if isinstance(used_at, str):
+                used_at = datetime.fromisoformat(used_at.replace('Z', '+00:00'))
+            
+            void_deadline = used_at + timedelta(hours=VOID_WINDOW_HOURS)
+            if datetime.now(used_at.tzinfo) > void_deadline:
+                return False, f"Void window expired. Must void within {VOID_WINDOW_HOURS} hours of redemption"
+        
+        return True, None
     
-    def get_allowed_transitions(self, current_state: str) -> Set[str]:
+    def get_allowed_transitions(self, current_state: EntitlementState) -> Set[EntitlementState]:
         """
         Get allowed transitions from current state
         
@@ -105,65 +111,103 @@ class EntitlementStateMachine:
         Returns:
             Set of allowed next states
         """
-        # TODO: Return allowed transitions for state
-        pass
+        return self.VALID_TRANSITIONS.get(current_state, set())
     
-    def validate_claim(self, offer_id: str, user_id: str) -> bool:
+    def is_terminal_state(self, state: EntitlementState) -> bool:
         """
-        Validate that user can claim offer
-        
-        Business rules:
-        - Offer must be active
-        - User hasn't exceeded claim limit
-        - Offer hasn't expired
+        Check if state is terminal (no further transitions)
         
         Args:
-            offer_id: Offer UUID
-            user_id: User UUID
+            state: State to check
             
         Returns:
-            True if claim is valid
+            True if terminal state
         """
-        # TODO: Implement claim validation rules
-        pass
+        return len(self.VALID_TRANSITIONS.get(state, set())) == 0
     
-    def validate_reservation(self, entitlement_id: str) -> bool:
+    def can_generate_qr(self, state: EntitlementState, expires_at: datetime) -> tuple[bool, Optional[str]]:
         """
-        Validate that entitlement can be reserved
+        Check if QR code can be generated for entitlement
         
         Business rules:
-        - Entitlement is in CLAIMED state
-        - Entitlement hasn't expired
-        - No active reservation exists
+        - Must be in ACTIVE state
+        - Must not be expired
         
         Args:
-            entitlement_id: Entitlement UUID
+            state: Current entitlement state
+            expires_at: Entitlement expiry timestamp
             
         Returns:
-            True if reservation is valid
+            (can_generate, reason)
         """
-        # TODO: Implement reservation validation rules
-        pass
+        if state != EntitlementState.ACTIVE:
+            return False, f"Cannot generate QR for entitlement in {state.value} state"
+        
+        if datetime.now(expires_at.tzinfo) >= expires_at:
+            return False, "Entitlement has expired"
+        
+        return True, None
     
-    def validate_redemption(
-        self,
-        entitlement_id: str,
-        validator_id: str
-    ) -> bool:
+    def can_validate(self, state: EntitlementState) -> tuple[bool, Optional[str]]:
         """
-        Validate that entitlement can be redeemed
+        Check if entitlement can be validated (merchant scan)
         
         Business rules:
-        - Entitlement is in RESERVED state
-        - Reservation hasn't expired
-        - Validator is authorized
+        - Must be in ACTIVE state
         
         Args:
-            entitlement_id: Entitlement UUID
-            validator_id: Validator user UUID
+            state: Current entitlement state
             
         Returns:
-            True if redemption is valid
+            (can_validate, reason)
         """
-        # TODO: Implement redemption validation rules
-        pass
+        if state != EntitlementState.ACTIVE:
+            return False, f"Cannot validate entitlement in {state.value} state"
+        
+        return True, None
+    
+    def can_confirm(self, state: EntitlementState) -> tuple[bool, Optional[str]]:
+        """
+        Check if redemption can be confirmed
+        
+        Business rules:
+        - Must be in PENDING_CONFIRMATION state
+        
+        Args:
+            state: Current entitlement state
+            
+        Returns:
+            (can_confirm, reason)
+        """
+        if state != EntitlementState.PENDING_CONFIRMATION:
+            return False, f"Cannot confirm redemption for entitlement in {state.value} state"
+        
+        return True, None
+    
+    def can_void(self, state: EntitlementState, used_at: datetime) -> tuple[bool, Optional[str]]:
+        """
+        Check if redemption can be voided
+        
+        Business rules:
+        - Must be in USED state
+        - Must be within void window (2 hours)
+        
+        Args:
+            state: Current entitlement state
+            used_at: Redemption timestamp
+            
+        Returns:
+            (can_void, reason)
+        """
+        if state != EntitlementState.USED:
+            return False, f"Can only void USED entitlements, current state: {state.value}"
+        
+        void_deadline = used_at + timedelta(hours=VOID_WINDOW_HOURS)
+        if datetime.now(used_at.tzinfo) > void_deadline:
+            return False, f"Void window expired. Must void within {VOID_WINDOW_HOURS} hours of redemption"
+        
+        return True, None
+
+
+# Global state machine instance
+state_machine = EntitlementStateMachine()

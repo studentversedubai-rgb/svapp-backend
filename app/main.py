@@ -11,6 +11,7 @@ from app.core.redis import redis_manager
 from app.modules.auth.router import router as auth_router
 from app.modules.offers.router import router as offers_router
 from app.modules.orbit.router import router as orbit_router
+from app.modules.entitlements.router import router as entitlements_router
 
 def create_app() -> FastAPI:
     """
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
     app.include_router(offers_router, prefix="/offers", tags=["Offers"])
     app.include_router(orbit_router, prefix="/orbit", tags=["Orbit AI"])
+    app.include_router(entitlements_router, prefix="/entitlements", tags=["Entitlements"])
     
     return app
 
