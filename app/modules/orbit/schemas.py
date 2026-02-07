@@ -15,6 +15,8 @@ class OrbitChatRequest(BaseModel):
     """Request for Orbit chat endpoint"""
     message: str = Field(..., min_length=1, max_length=500, description="User's message to Orbit")
     session_id: Optional[str] = Field(None, description="Session ID for conversation continuity")
+    latitude: Optional[float] = Field(None, ge=-90, le=90, description="User's latitude for distance calculation")
+    longitude: Optional[float] = Field(None, ge=-180, le=180, description="User's longitude for distance calculation")
 
 
 class OrbitOfferCard(BaseModel):
@@ -22,6 +24,11 @@ class OrbitOfferCard(BaseModel):
     id: str
     title: str
     description: str
+    merchant_name: str = Field(..., description="Merchant/partner name")
+    address: Optional[str] = Field(None, description="Merchant address")
+    latitude: Optional[float] = Field(None, description="Merchant latitude")
+    longitude: Optional[float] = Field(None, description="Merchant longitude")
+    distance_km: Optional[float] = Field(None, description="Distance from user in kilometers")
     tags: Dict[str, Any] = Field(default_factory=dict)
     highlights: List[str] = Field(default_factory=list)
 

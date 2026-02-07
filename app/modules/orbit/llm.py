@@ -125,7 +125,7 @@ Your personality: Helpful, witty, enthusiastic, slightly playful but professiona
             merchant = offer.get('merchant', {})
             category = offer.get('category', {})
             
-            offers_context.append({
+            offer_context = {
                 "id": offer.get('id'),
                 "title": offer.get('title'),
                 "description": offer.get('description'),
@@ -133,8 +133,12 @@ Your personality: Helpful, witty, enthusiastic, slightly playful but professiona
                 "category": category.get('name', 'General'),
                 "discount_value": offer.get('discount_value', ''),
                 "original_price": offer.get('original_price'),
-                "discounted_price": offer.get('discounted_price')
-            })
+                "discounted_price": offer.get('discounted_price'),
+                # Location data (will be injected back from real data - NOT for LLM to use)
+                "address": merchant.get('address'),
+                "distance_km": offer.get('distance_km')
+            }
+            offers_context.append(offer_context)
         
         offers_json = json.dumps(offers_context, indent=2)
         

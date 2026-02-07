@@ -16,6 +16,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import get_current_user
 from app.core.config import Settings
+from app.core.ratelimit import RateLimiter
 from app.modules.orbit.schemas import (
     OrbitChatRequest,
     OrbitChatResponse
@@ -69,6 +70,12 @@ async def orbit_chat(
                 detail="Orbit is currently unavailable"
             )
         
+        # Check rate limits BEFORE processing (prevent wasting resources/money)
+        RateLimiter.check_limits(
+            user_id=current_user["id"],
+            daily_limit=settings.DAILY_CHAT_LIMIT
+        )
+        
         # Initialize service
         service = OrbitService(settings)
         
@@ -76,7 +83,9 @@ async def orbit_chat(
         response = await service.chat(
             user_id=current_user["id"],
             message=request.message,
-            session_id=request.session_id
+            session_id=request.session_id,
+            latitude=request.latitude,
+            longitude=request.longitude
         )
         
         return response

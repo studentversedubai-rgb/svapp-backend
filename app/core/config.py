@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     OPENROUTER_MODEL: str = "google/gemini-2.0-flash-001"
     ORBIT_MAX_RESULTS: int = 10
     
+    # Rate limiting for Orbit chat
+    DAILY_CHAT_LIMIT: int = 150  # Max chat requests per 24 hours
+    VELOCITY_LIMIT: int = 10  # Max requests per minute
+    VELOCITY_WINDOW: int = 60  # Velocity window in seconds
+    
     # ================================
     # SV PAY (Placeholder)
     # ================================

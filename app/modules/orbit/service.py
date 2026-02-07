@@ -13,6 +13,7 @@ from app.modules.orbit.retrieval import OfferRetrieval
 from app.modules.orbit.llm import LLMPresenter
 from app.modules.orbit.conversation import conversation_manager
 from app.modules.orbit.schemas import OrbitChatResponse, OrbitOfferCard
+from app.modules.orbit.distance import calculate_distance
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,9 @@ class OrbitService:
         self,
         user_id: str,
         message: str,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None
     ) -> OrbitChatResponse:
         """
         Chat with Orbit AI assistant (conversational)
@@ -51,6 +54,8 @@ class OrbitService:
             user_id: User UUID
             message: User's message
             session_id: Optional session ID for conversation continuity
+            latitude: Optional user latitude for distance calculations
+            longitude: Optional user longitude for distance calculations
             
         Returns:
             Orbit's response with recommended offers (if applicable)
@@ -62,6 +67,8 @@ class OrbitService:
                 logger.info(f"Generated new session: {session_id}")
             
             logger.info(f"Orbit chat request from user {user_id}, session {session_id}: {message}")
+            if latitude and longitude:
+                logger.info(f"User location: ({latitude}, {longitude})")
             
             # Step 1: Load conversation history
             history = conversation_manager.format_history_for_llm(user_id, session_id, limit=10)
@@ -107,10 +114,29 @@ class OrbitService:
                         conversation_history=history
                     )
                     
-                    # Validate offer IDs
+                    # Calculate distances if user location provided
+                    if latitude and longitude:
+                        for offer in offers:
+                            merchant = offer.get('merchant')
+                            if merchant and merchant.get('latitude') and merchant.get('longitude'):
+                                distance = calculate_distance(
+                                    latitude, longitude,
+                                    merchant['latitude'], merchant['longitude']
+                                )
+                                offer['distance_km'] = distance
+                            else:
+                                offer['distance_km'] = None
+                        
+                        # Sort by distance (closest first)
+                        offers.sort(key=lambda x: (x['distance_km'] is None, x.get('distance_km', float('inf'))))
+                        logger.info(f"Sorted offers by distance from user")
+                    
+                    # Validate offer IDs and inject location data
                     validated_plans = self._validate_offer_ids(
                         llm_response.get("plans", []),
-                        offers
+                        offers,
+                        latitude,
+                        longitude
                     )
                     
                     response_content = llm_response.get("content", "Here's what I found for you!")
@@ -156,30 +182,56 @@ class OrbitService:
     def _validate_offer_ids(
         self,
         llm_plans: List[Dict],
-        retrieved_offers: List[Dict]
+        retrieved_offers: List[Dict],
+        user_latitude: Optional[float] = None,
+        user_longitude: Optional[float] = None
     ) -> List[OrbitOfferCard]:
         """
         Validate that LLM only used offer IDs from retrieved data
+        AND inject real location data from database
         
         CRITICAL: This prevents hallucinations
         
         Args:
             llm_plans: Plans returned by LLM
             retrieved_offers: Offers retrieved from database
+            user_latitude: User's latitude for distance calculation
+            user_longitude: User's longitude for distance calculation
             
         Returns:
-            Validated offer cards
+            Validated offer cards with real location data
         """
-        # Build set of valid offer IDs
-        valid_ids = {offer.get('id') for offer in retrieved_offers}
+        # Build map of valid offers by ID
+        offers_by_id = {offer.get('id'): offer for offer in retrieved_offers}
         
         validated_plans = []
         for plan in llm_plans:
             offer_id = plan.get('id')
             
             # Only include if ID exists in retrieved offers
-            if offer_id in valid_ids:
+            if offer_id in offers_by_id:
                 try:
+                    # Get real offer data from database
+                    real_offer = offers_by_id[offer_id]
+                    merchant = real_offer.get('merchant', {})
+                    
+                    # Inject REAL location data from database
+                    # LLM should NOT fabricate this data
+                    plan['merchant_name'] = merchant.get('name', 'Unknown')
+                    plan['address'] = merchant.get('address')
+                    plan['latitude'] = merchant.get('latitude')
+                    plan['longitude'] = merchant.get('longitude')
+                    
+                    # Calculate distance if user location and merchant location available
+                    if (user_latitude and user_longitude and 
+                        merchant.get('latitude') and merchant.get('longitude')):
+                        plan['distance_km'] = calculate_distance(
+                            user_latitude, user_longitude,
+                            merchant['latitude'], merchant['longitude']
+                        )
+                    else:
+                        plan['distance_km'] = real_offer.get('distance_km')
+                    
                     validated_plans.append(OrbitOfferCard(**plan))
                 except Exception as e:
                     logger.warning(f"Failed to validate plan: {e}")
