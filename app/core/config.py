@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # SUPABASE
     # ================================
     SUPABASE_URL: str
-    SUPABASE_ANON_KEY: str
+    SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_KEY: str
     
     # ================================
@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 
 # Global settings instance

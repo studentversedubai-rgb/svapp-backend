@@ -12,6 +12,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.offers.router import router as offers_router
 from app.modules.orbit.router import router as orbit_router
 from app.modules.entitlements.router import router as entitlements_router
+from app.modules.merchant.router import router as merchant_router
 
 def create_app() -> FastAPI:
     """
@@ -90,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(offers_router, prefix="/offers", tags=["Offers"])
     app.include_router(orbit_router, prefix="/orbit", tags=["Orbit AI"])
     app.include_router(entitlements_router, prefix="/entitlements", tags=["Entitlements"])
+    app.include_router(merchant_router, prefix="/merchant", tags=["Merchant Validation"])
     
     return app
 
