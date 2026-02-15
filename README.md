@@ -1,172 +1,200 @@
-# StudentVerse Backend
+# StudentVerse Backend API
 
-## Overview
+Production-grade FastAPI backend for the StudentVerse mobile application, providing authentication, offers, QR-based redemption, and AI-powered recommendations.
 
-Production-grade backend for the StudentVerse mobile application (iOS & Android, built with React Native). This repository serves as the central API layer for all StudentVerse services including authentication, offers, entitlements, SV Orbit (AI planner), and SV Pay (payments).
+---
 
-## Tech Stack
-
-- **Framework**: FastAPI (Python)
-- **Database**: Supabase (PostgreSQL + Auth)
-- **Cache/Session**: Redis
-- **Hosting**: Railway
-- **Authentication**: Supabase Auth (JWT-based, mobile-optimized)
-
-## Key Architectural Principles
-
-### Authentication Rules
-- **Supabase Auth** handles all password management and JWT issuance
-- User email is **immutable** and must be a **university email**
-- Mobile app uses **persistent login** with JWT refresh tokens
-- Backend verifies JWTs but does NOT store passwords
-
-### Repository Structure
-- **Single monorepo** for all backend services
-- **Domain-driven modules** for clean separation of concerns
-- **Feature flags** for SV Pay and future features
-- **Investor-grade** code quality and documentation
-
-## Development Phases
-
-### Phase 0A: Foundation
-- Auth flow (OTP + registration)
-- User profiles
-- Basic offer listing
-
-### Phase 0B: Core Features
-- Entitlements system
-- State machine for redemption flow
-- Validator PWA integration
-
-### Phase 1: SV Orbit (AI Planner)
-- Partner-only retrieval (no hallucinations)
-- Scoring and orchestration
-- LLM-powered presentation layer
-
-### Phase 1.5: Analytics & Insights
-- Usage tracking
-- Partner analytics
-- User behavior insights
-
-### Phase 2: SV Pay (Feature Flagged)
-- Payment processing (disabled by default)
-- PSP/issuer abstraction
-- Transaction management
-
-## Project Structure
-
-```
-studentverse-backend/
-├── app/                    # Main FastAPI application
-│   ├── core/              # Core utilities (config, security, DB, Redis)
-│   ├── shared/            # Shared schemas, enums, utils
-│   └── modules/           # Domain modules (auth, users, offers, etc.)
-├── migrations/            # Database migrations
-├── tests/                 # Unit, integration, and E2E tests
-├── docs/                  # Architecture and API documentation
-├── scripts/               # Utility scripts
-├── Dockerfile             # Container configuration
-├── railway.toml           # Railway deployment config
-├── requirements.txt       # Python dependencies
-├── .env.example           # Environment variables template
-└── .gitignore            # Git ignore rules
-```
-
-## Team Collaboration
-
-### For Backend Developers
-
-1. **Branch Strategy**
-   - `main`: Production-ready code
-   - `develop`: Integration branch
-   - `feature/*`: Individual features
-   - `hotfix/*`: Production fixes
-
-2. **Module Ownership**
-   - Each developer can own specific modules
-   - Use clear PR descriptions
-   - Tag teammates for cross-module changes
-
-3. **Code Standards**
-   - Follow PEP 8 for Python
-   - Use type hints everywhere
-   - Write docstrings for all public functions
-   - Keep modules isolated (minimal cross-dependencies)
-
-4. **Testing Requirements**
-   - Unit tests for all services
-   - Integration tests for API endpoints
-   - Maintain >80% code coverage
-
-## Local Development Setup
+## 🚀 Quick Start
 
 ### Prerequisites
-```bash
-# Python 3.11+
-# Redis (local or Docker)
-# Supabase project credentials
-```
+- Python 3.11+
+- Redis (local or cloud)
+- Supabase project
 
 ### Installation
+
 ```bash
 # Clone repository
 git clone <repository-url>
-cd studentverse-backend
+cd sv-backend
 
 # Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Copy environment template
+# Configure environment
 cp .env.example .env
 # Edit .env with your credentials
 
-# Run migrations
-# [Migration command placeholder]
-
-# Start development server
+# Run server
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Environment Variables
-See `.env.example` for required configuration:
-- Supabase URL and keys
-- Redis connection string
-- JWT secret
-- Feature flags
-- Railway deployment settings
-
-## API Documentation
-
-Once running, access:
+### Access API Documentation
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 
-## Deployment
+---
 
-Deployment is automated via Railway:
+## 📋 Environment Variables
+
+Required environment variables (see `.env.example`):
+
+### Core Services
+```bash
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-service-role-key
+REDIS_URL=redis://localhost:6379
+```
+
+### Email (OTP Delivery)
+```bash
+RESEND_API_KEY=your-resend-api-key
+RESEND_FROM=noreply@studentverse.ae
+```
+
+### AI Features (Optional)
+```bash
+OPENROUTER_API_KEY=your-openrouter-key
+OPENROUTER_MODEL=google/gemini-2.0-flash-001
+```
+
+### Feature Flags
+```bash
+FEATURE_SV_ORBIT_ENABLED=true
+FEATURE_ANALYTICS_ENABLED=true
+```
+
+---
+
+## 🏗️ Architecture
+
+### Tech Stack
+- **Framework**: FastAPI (Python)
+- **Database**: Supabase (PostgreSQL + Auth)
+- **Cache**: Redis (Upstash)
+- **Email**: Resend
+- **AI**: OpenRouter (Gemini)
+- **Hosting**: Railway
+
+### Project Structure
+```
+sv-backend/
+├── app/
+│   ├── core/              # Core utilities (config, security, DB, Redis)
+│   ├── shared/            # Shared schemas, enums, constants
+│   └── modules/           # Feature modules
+│       ├── auth/          # Authentication & user management
+│       ├── offers/        # Offer browsing & search
+│       ├── entitlements/  # QR redemption system
+│       └── orbit/         # AI recommendations
+├── docs/                  # Documentation
+├── migrations/            # Database migrations
+├── tests/                 # Test suite
+└── scripts/               # Utility scripts
+```
+
+---
+
+## 📚 API Modules
+
+### 1. Authentication (`/auth`)
+- OTP-based email verification
+- JWT token management
+- User profile management
+
+### 2. Offers (`/offers`)
+- Browse active offers
+- Search and filter
+- Featured offers
+
+### 3. Entitlements (`/entitlements`)
+- Claim offers
+- Generate QR codes (30s TTL)
+- Merchant validation
+- Redemption confirmation
+- Void logic (2-hour window)
+
+### 4. Orbit AI (`/orbit`)
+- AI-powered chat assistant
+- Personalized recommendations
+- Nearby offers with distance calculation
+
+---
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=app --cov-report=html
+
+# Run specific test file
+pytest tests/test_entitlements.py -v
+```
+
+---
+
+## 🚢 Deployment
+
+### Railway (Production)
 1. Push to `main` branch
-2. Railway automatically builds and deploys
-3. Environment variables managed in Railway dashboard
+2. Railway auto-deploys
+3. Configure environment variables in Railway dashboard
 
-## Documentation
+### Environment-Specific Settings
+- **Development**: `ENVIRONMENT=development`, `DEBUG=true`
+- **Production**: `ENVIRONMENT=production`, `DEBUG=false`
 
-See `docs/` folder for detailed documentation:
-- `architecture.md`: System architecture and design decisions
-- `auth-flow.md`: Mobile authentication flow
-- `phases.md`: Detailed phase breakdown
-- `api-contracts.md`: Frontend-backend API agreements
-- `decisions.md`: Architectural Decision Records (ADRs)
+---
 
-## Support
+## 📖 Documentation
+
+- **[Architecture](docs/architecture.md)**: System design and patterns
+- **[API Overview](docs/api-overview.md)**: All endpoints and usage
+- **[Redemption Flow](docs/redemption-flow.md)**: QR redemption system details
+- **[Phases](docs/phases.md)**: Development roadmap
+
+---
+
+## 🔒 Security
+
+- ✅ JWT-based authentication via Supabase
+- ✅ Rate limiting on all endpoints
+- ✅ Input validation with Pydantic
+- ✅ No hardcoded secrets
+- ✅ CORS configuration
+- ✅ Row-level security (RLS) in Supabase
+
+---
+
+## 🤝 Contributing
+
+### Code Standards
+- Follow PEP 8
+- Use type hints
+- Write docstrings
+- Maintain test coverage >80%
+
+### Branch Strategy
+- `main`: Production-ready code
+- `develop`: Integration branch
+- `feature/*`: New features
+- `hotfix/*`: Production fixes
+
+---
+
+## 📞 Support
 
 For questions or issues:
 1. Check documentation in `docs/`
-2. Review existing issues/PRs
-3. Contact team leads
+2. Review API docs at `/docs`
+3. Contact the development team
 
 ---
 
