@@ -31,79 +31,7 @@ class LLMPresenter:
         )
         self.model = settings.OPENROUTER_MODEL
     
-    async def generate_response(
-        self,
-        user_message: str,
-        offers: List[Dict]
-    ) -> dict:
-        """
-        Generate natural language response with offer recommendations
-        
-        LLM receives:
-        - User message
-        - List of REAL offers (from retrieval)
-        
-        LLM generates:
-        - Natural language intro
-        - Selection of best 3 offers
-        - Structured JSON response
-        
-        Args:
-            user_message: User's original message
-            offers: List of retrieved offers (REAL DATA)
-            
-        Returns:
-            Structured response with content and plans
-        """
-        try:
-            # Build prompts
-            system_prompt = self._build_system_prompt()
-            user_prompt = self._build_user_prompt(user_message, offers)
-            
-            # Call OpenRouter API
-            logger.info(f"Calling OpenRouter with model: {self.model}")
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7,
-                max_tokens=1000
-            )
-            
-            # Extract response content
-            llm_response = response.choices[0].message.content
-            logger.info(f"Received LLM response: {llm_response[:100]}...")
-            
-            # Parse JSON response
-            parsed_response = self._parse_llm_response(llm_response)
-            
-            return parsed_response
-            
-        except Exception as e:
-            logger.error(f"Error generating LLM response: {e}")
-            raise
-    
-    def _build_system_prompt(self) -> str:
-        """
-        Build system prompt for Orbit personality
-        
-        Returns:
-            System prompt string
-        """
-        return """You are Orbit, a witty and fun local guide for students in Dubai. 
-You speak in a trendy, slightly Gen-Z but helpful tone. You're enthusiastic about helping students discover amazing deals.
 
-CRITICAL RULES:
-1. NEVER invent or hallucinate offers. Only use the Context Data provided.
-2. Select EXACTLY 3 offers from the Context Data that best match the user's request.
-3. Return ONLY valid JSON - no markdown, no code blocks, no extra text.
-4. Use offer IDs EXACTLY as provided in the Context Data.
-5. Keep your intro message fun but concise (2-3 sentences max).
-
-Your personality: Helpful, witty, enthusiastic, slightly playful but professional."""
-    
     def _build_user_prompt(
         self,
         message: str,
@@ -218,28 +146,7 @@ Remember: Use ONLY offer IDs from the Context Data above. Return clean JSON only
             logger.error(f"Error parsing LLM response: {e}")
             raise
     
-    async def present_plan(
-        self,
-        intent: str,
-        offers: List[Dict],
-        user_preferences: Dict = None
-    ) -> str:
-        """
-        Generate natural language presentation of plan
-        
-        (Legacy method for compatibility)
-        
-        Args:
-            intent: User's original intent
-            offers: List of REAL offers (from retrieval)
-            user_preferences: Optional user preferences
-            
-        Returns:
-            Natural language plan presentation
-        """
-        response = await self.generate_response(intent, offers)
-        return response.get("content", "")
-    
+
     async def analyze_intent(
         self,
         user_message: str,
@@ -384,7 +291,8 @@ or
     async def generate_conversation(
         self,
         user_message: str,
-        conversation_history: List[Dict[str, str]]
+        conversation_history: List[Dict[str, str]],
+        system_prompt: str  # NEW: Accept dynamic system prompt
     ) -> str:
         """
         Generate pure conversational response (no offers)
@@ -392,31 +300,13 @@ or
         Args:
             user_message: Current user message
             conversation_history: Previous messages
+            system_prompt: Mode-specific system prompt for chat
             
         Returns:
             Natural conversational response
         """
         try:
-            system_prompt = """You are Orbit, a witty and fun AI assistant for StudentVerse Dubai.
-
-YOUR PERSONALITY:
-- Friendly, enthusiastic, genuinely interested in students
-- Use emojis, casual language, student slang
-- Ask follow-up questions to engage
-- Remember conversation context
-
-YOUR ROLE:
-You help students discover amazing deals and offers in Dubai. However, right now the user is just chatting with you, not asking for specific offers yet.
-
-GUIDELINES:
-1. Respond warmly and naturally to their message
-2. Build rapport - ask about them, show interest
-3. If appropriate, mention you can help them find deals (but don't push it)
-4. Keep responses conversational and brief (2-3 sentences max)
-5. Match their energy and tone
-
-Remember: You're having a friendly conversation, not selling anything!"""
-
+            # Use provided system prompt (mode-specific)
             # Build messages
             messages = [{"role": "system", "content": system_prompt}]
             
@@ -447,7 +337,8 @@ Remember: You're having a friendly conversation, not selling anything!"""
         self,
         user_message: str,
         offers: List[Dict],
-        conversation_history: List[Dict[str, str]]
+        conversation_history: List[Dict[str, str]],
+        system_prompt: str  # NEW: Accept dynamic system prompt
     ) -> dict:
         """
         Generate response with offers, considering conversation history
@@ -456,13 +347,13 @@ Remember: You're having a friendly conversation, not selling anything!"""
             user_message: Current user message
             offers: Retrieved offers
             conversation_history: Previous messages
+            system_prompt: Mode-specific system prompt
             
         Returns:
             Structured response with content and plans
         """
         try:
-            # Build enhanced system prompt with context awareness
-            system_prompt = self._build_conversational_system_prompt()
+            # Use provided system prompt instead of building one
             user_prompt = self._build_user_prompt(user_message, offers)
             
             # Build messages with history
@@ -497,40 +388,4 @@ Remember: You're having a friendly conversation, not selling anything!"""
                 "plans": []
             }
     
-    def _build_conversational_system_prompt(self) -> str:
-        """Build system prompt for contextual conversations"""
-        return """You are Orbit, StudentVerse Dubai's witty AI assistant! 🚀
-
-PERSONALITY:
-- Fun, enthusiastic, genuinely care about students
-- Use emojis, casual language, student slang
-- Remember context from the conversation
-- Be natural - reference previous messages when relevant
-
-YOUR MISSION:
-Help students discover epic deals and offers in Dubai!
-
-CRITICAL RULES:
-1. ONLY recommend offers from the Context Data provided
-2. NEVER make up or hallucinate offers
-3. Select EXACTLY 3 best offers that match the request
-4. Reference conversation history naturally when relevant
-5. Return ONLY valid JSON
-
-JSON FORMAT:
-{
-  "content": "Your intro message (mention context if relevant)",
-  "plans": [
-    {
-      "id": "exact-offer-id",
-      "title": "exact title",
-      "description": "why this is perfect for them",
-      "merchant_name": "exact merchant",
-      "category": "exact category",
-      "discount_value": "exact value"
-    }
-  ]
-}
-
-Keep it fun, contextual, and REAL! 🎉"""
 

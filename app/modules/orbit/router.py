@@ -85,7 +85,8 @@ async def orbit_chat(
             message=request.message,
             session_id=request.session_id,
             latitude=request.latitude,
-            longitude=request.longitude
+            longitude=request.longitude,
+            mode=request.mode  # NEW: Pass mode to service
         )
         
         return response

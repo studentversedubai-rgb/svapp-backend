@@ -5,6 +5,18 @@ SV Orbit Schemas
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from enum import Enum
+
+
+# ================================
+# ORBIT MODES
+# ================================
+
+class OrbitMode(str, Enum):
+    """Orbit AI behavior modes"""
+    CHAT = "chat"  # Casual conversation, witty persona
+    FIND = "find"  # Focused discovery, specific recommendations
+    PLAN = "plan"  # Structured itinerary creation
 
 
 # ================================
@@ -17,6 +29,7 @@ class OrbitChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="Session ID for conversation continuity")
     latitude: Optional[float] = Field(None, ge=-90, le=90, description="User's latitude for distance calculation")
     longitude: Optional[float] = Field(None, ge=-180, le=180, description="User's longitude for distance calculation")
+    mode: OrbitMode = Field(OrbitMode.CHAT, description="AI behavior mode: chat, find, or plan")
 
 
 class OrbitOfferCard(BaseModel):
