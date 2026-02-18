@@ -53,6 +53,21 @@ AI-powered recommendations and planning.
 - `GET /orbit/recommendations` - Get personalized recommendations
 - `GET /orbit/nearby` - Get nearby offers
 
+### 5. Merchant Validation (`/merchant`)
+Public endpoints for merchant-side QR validation and redemption.
+
+**Endpoints:**
+- `POST /merchant/validate` - Validate student's QR proof token
+- `POST /merchant/confirm` - Confirm redemption with PIN and bill amount
+- `POST /merchant/void` - Void a redemption within void window
+- `GET /merchant/health` - Health check for merchant endpoints
+
+**Notes:**
+- All endpoints are **public** (no JWT authentication required)
+- `/confirm` and `/void` require merchant PIN for authorization
+- QR tokens have 30-second TTL
+- Void window is 2 hours from redemption time
+
 ---
 
 ## Response Format
