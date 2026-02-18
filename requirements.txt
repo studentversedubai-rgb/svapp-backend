@@ -6,7 +6,6 @@ pydantic-settings==2.1.0
 
 # Database
 supabase==2.9.0
-postgrest==0.13.0
 sqlalchemy==2.0.25
 asyncpg==0.29.0
 
