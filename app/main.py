@@ -112,3 +112,12 @@ async def root():
         "docs": "/docs",
         "health": "/health"
     }
+
+
+# ================================
+# Health Check Endpoint
+# ================================
+@app.get("/health")
+async def health():
+    """Health check endpoint for Railway"""
+    return {"status": "ok", "version": "1.0.0"}
