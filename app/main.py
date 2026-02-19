@@ -65,6 +65,27 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ================================
+    # Exception Handlers
+    # ================================
+    from fastapi.responses import JSONResponse
+    from fastapi.exceptions import RequestValidationError
+    from fastapi import Request, HTTPException
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"ok": False, "error": exc.detail},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "error": str(exc.errors())}, # standard pydantic error format wrapped
+        )
     
     # ================================
     # Startup Events

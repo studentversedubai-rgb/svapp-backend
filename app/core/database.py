@@ -20,13 +20,16 @@ class DatabaseManager:
         self.supabase: Client = None
         
         supabase_url = os.getenv("SUPABASE_URL")
-        supabase_key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+        # Use SERVICE_KEY preferably for backend operations to allow admin tasks
+        supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
         
         if not supabase_url or not supabase_key:
             print("WARNING: SUPABASE_URL or SUPABASE_KEY not found in environment")
             return
             
         try:
+            # When using SERVICE_KEY, we should be careful with auth flows.
+            # But the client needs to perform admin tasks.
             self.supabase = create_client(supabase_url, supabase_key)
             print("INFO: Initialized Supabase client")
         except Exception as e:

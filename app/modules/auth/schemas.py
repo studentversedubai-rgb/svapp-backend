@@ -4,7 +4,7 @@ Authentication Schemas
 Pydantic models for authentication requests and responses.
 """
 
-from typing import Optional
+from typing import Optional, Any, Dict
 from pydantic import BaseModel, EmailStr, Field
 
 class SendOTPRequest(BaseModel):
@@ -17,10 +17,29 @@ class VerifyOTPRequest(BaseModel):
     code: str = Field(..., min_length=6, max_length=6, description="6-digit OTP code")
 
 class RegisterRequest(BaseModel):
-    """Request to register a new user"""
+    """Request to complete user registration/profile"""
     email: EmailStr = Field(..., description="University email address")
-    password: str = Field(..., min_length=8, description="User password")
-    name: str = Field(..., min_length=1, description="User's full name")
+    first_name: str = Field(..., min_length=1, description="First name")
+    last_name: str = Field(..., min_length=1, description="Last name")
+    nationality: Optional[str] = Field(None, description="Nationality")
+    university: Optional[str] = Field(None, description="University name")
+    phone_number: Optional[str] = Field(None, description="Phone number")
+    age: Optional[int] = Field(None, description="User age")
+    profile_picture_url: Optional[str] = Field(None, alias="avatar_url", description="Profile picture URL")
+    device_id: Optional[str] = Field(None, description="Device ID for single device login")
+
+    class Config:
+        populate_by_name = True
+
+class ProfileUpdateRequest(BaseModel):
+    """Request to update allowed profile fields"""
+    university: Optional[str] = Field(None, description="University name")
+    nationality: Optional[str] = Field(None, description="Nationality")
+    phone_number: Optional[str] = Field(None, description="Phone number")
+    profile_picture_url: Optional[str] = Field(None, alias="avatar_url", description="Profile picture URL")
+
+    class Config:
+        populate_by_name = True
 
 class LoginRequest(BaseModel):
     """Request to login"""
@@ -30,39 +49,52 @@ class LoginRequest(BaseModel):
 class UserData(BaseModel):
     """User data in response"""
     id: str = Field(..., description="User UUID")
-    name: Optional[str] = Field(default="", description="User's full name")
     email: str = Field(..., description="User's email")
+    first_name: Optional[str] = Field(None, description="First name")
+    last_name: Optional[str] = Field(None, description="Last name")
 
 class AuthResponse(BaseModel):
     """Response after successful authentication"""
-    token: str = Field(..., description="Access token")
-    user: UserData = Field(..., description="User data")
+    ok: bool = True
+    data: Dict[str, Any] = Field(..., description="Auth data including token and user")
 
 class UserProfile(BaseModel):
     """User profile data for /me endpoint"""
     id: str
     email: str
-    phoneNumber: Optional[str] = Field(None, alias="phone_number")
-    studentId: Optional[str] = Field(None, alias="student_id")
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    nationality: Optional[str] = None
     university: Optional[str] = None
-    avatar: Optional[str] = Field(None, alias="avatar_url")
+    phone_number: Optional[str] = None
+    age: Optional[int] = None
+    avatar_url: Optional[str] = None
+    account_type: Optional[str] = "free"
     
+    # Computed/Legacy fields
+    full_name: Optional[str] = None 
+
     class Config:
         populate_by_name = True  # Allow both camelCase and snake_case
 
 class UserStats(BaseModel):
-    """User statistics (mocked for now)"""
-    totalSaved: str = "£0"
-    activeDeals: int = 0
-    visits: int = 0
+    """User statistics"""
+    total_saved: float = 0.0
+    total_spent: float = 0.0
+    total_redemptions: int = 0
+    subscription_status: str = "free"
 
 class UserPreferences(BaseModel):
     """User preferences (mocked for now)"""
-    notificationsEnabled: bool = True
-    darkModeEnabled: bool = True
+    notifications_enabled: bool = True
+    dark_mode_enabled: bool = True
 
 class ProfileResponse(BaseModel):
-    """Response for GET /me endpoint"""
-    user: UserProfile
-    stats: UserStats
-    preferences: UserPreferences
+    """Response for GET /me and GET /profile/analytics endpoint"""
+    ok: bool = True
+    data: Any
+
+class AnalyticsResponse(BaseModel):
+    """Response for analytics"""
+    ok: bool = True
+    data: UserStats
