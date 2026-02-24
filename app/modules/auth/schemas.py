@@ -83,7 +83,7 @@ class RegisterRequest(BaseModel):
     def phone_must_be_valid(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        v = v.strip()
+        v = v.strip().replace(" ", "")  # Strip spaces (frontend may send "+971 505129707")
         if not re.match(r"^\+[1-9]\d{6,14}$", v):
             raise ValueError("Phone number must be in international format (e.g. +971501234567)")
         return v
@@ -103,6 +103,8 @@ class RegisterRequest(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     """Request to update allowed profile fields"""
+    name: Optional[str] = Field(None, min_length=2, max_length=100, description="Full name")
+    student_id: Optional[str] = Field(None, min_length=3, max_length=30, description="Student ID")
     university: Optional[str] = Field(None, description="University name")
     nationality: Optional[str] = Field(None, description="Nationality")
     phone_number: Optional[str] = Field(None, description="Phone number")
