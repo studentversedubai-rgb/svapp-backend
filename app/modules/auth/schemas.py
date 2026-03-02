@@ -144,7 +144,8 @@ class UserProfile(BaseModel):
     age: Optional[int] = None
     avatar_url: Optional[str] = None
     account_type: Optional[str] = "free"
-    
+    created_at: Optional[str] = None  # ISO timestamp — used as "Member Since" in app
+
     # Computed/Legacy fields
     full_name: Optional[str] = None 
 
