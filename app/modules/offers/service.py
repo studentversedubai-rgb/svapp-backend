@@ -176,8 +176,8 @@ class OfferService:
             # Filter: only active offers
             query = query.eq("is_active", True)
             
-            # Filter: only active merchants
-            query = query.eq("merchants.is_active", True)
+            # NOTE: .eq("merchants.is_active", True) does NOT work in PostgREST
+            # — filter inactive merchants in Python after the join instead.
             
             # Filter: date range validity
             now = datetime.now(timezone.utc).isoformat()
@@ -195,25 +195,33 @@ class OfferService:
                     total_pages=0
                 )
             
+            # Filter: merchant must be active (done in Python — PostgREST join filter doesn't work)
+            active_offers = [
+                offer for offer in result.data
+                if self._merchant_is_active(offer)
+            ]
+
             # Filter offers by time and day eligibility
             eligible_offers = [
-                offer for offer in result.data
+                offer for offer in active_offers
                 if self.is_offer_eligible(offer, check_time=True, check_day=True)
             ]
             
             # Calculate distance if location provided
             if latitude is not None and longitude is not None:
                 for offer in eligible_offers:
-                    merchant = offer.get('merchant')
-                    if merchant and merchant.get('latitude') and merchant.get('longitude'):
+                    merchant = self._get_merchant_dict(offer)
+                    m_lat = merchant.get('latitude')
+                    m_lon = merchant.get('longitude')
+                    if m_lat and m_lon:
                         distance = self.calculate_distance(
                             latitude, longitude,
-                            merchant['latitude'], merchant['longitude']
+                            float(m_lat), float(m_lon)
                         )
                         offer['distance_km'] = distance
                     else:
                         offer['distance_km'] = None
-                
+
                 # Sort by distance (nulls last), then by created_at
                 eligible_offers.sort(
                     key=lambda x: (x['distance_km'] is None, x['distance_km'], x['created_at']),
@@ -288,7 +296,8 @@ class OfferService:
             
             # Filter: only active offers from active merchants
             db_query = db_query.eq("is_active", True)
-            db_query = db_query.eq("merchants.is_active", True)
+            # NOTE: .eq("merchants.is_active", True) does NOT work in PostgREST
+            # — filter inactive merchants in Python after the join instead.
             
             # Filter: date range
             now = datetime.now(timezone.utc).isoformat()
@@ -315,24 +324,32 @@ class OfferService:
                     total_pages=0
                 )
             
+            # Filter: merchant must be active (Python-side — PostgREST join filter doesn't work)
+            active_offers = [
+                offer for offer in result.data
+                if self._merchant_is_active(offer)
+            ]
+
             # Filter by time/day eligibility
             eligible_offers = [
-                offer for offer in result.data
+                offer for offer in active_offers
                 if self.is_offer_eligible(offer, check_time=True, check_day=True)
             ]
             
             # Distance filtering and calculation
             if latitude is not None and longitude is not None:
                 offers_with_distance = []
-                
+
                 for offer in eligible_offers:
-                    merchant = offer.get('merchant')
-                    if merchant and merchant.get('latitude') and merchant.get('longitude'):
+                    merchant = self._get_merchant_dict(offer)
+                    m_lat = merchant.get('latitude')
+                    m_lon = merchant.get('longitude')
+                    if m_lat and m_lon:
                         distance = self.calculate_distance(
                             latitude, longitude,
-                            merchant['latitude'], merchant['longitude']
+                            float(m_lat), float(m_lon)
                         )
-                        
+
                         # Filter by radius if specified
                         if radius_km is None or distance <= radius_km:
                             offer['distance_km'] = distance
@@ -341,7 +358,7 @@ class OfferService:
                         # Include offers without location if no radius filter
                         offer['distance_km'] = None
                         offers_with_distance.append(offer)
-                
+
                 eligible_offers = offers_with_distance
                 # Sort by distance
                 eligible_offers.sort(
@@ -510,12 +527,38 @@ class OfferService:
     # ================================
     # HELPER METHODS
     # ================================
-    
+
+    def _merchant_is_active(self, offer: dict) -> bool:
+        """
+        Safely check if the merchant on a joined offer row is active.
+        Supabase PostgREST returns the joined merchant as a dict OR a list[dict].
+        Handles both cases gracefully.
+        """
+        merchant = offer.get('merchant')
+        if not merchant:
+            return False
+        # PostgREST sometimes returns a list when using named joins
+        if isinstance(merchant, list):
+            merchant = merchant[0] if merchant else None
+        if not merchant:
+            return False
+        return bool(merchant.get('is_active', False))
+
+    def _get_merchant_dict(self, offer: dict):
+        """Safely extract merchant dict from offer, handling list vs dict join result."""
+        merchant = offer.get('merchant')
+        if isinstance(merchant, list):
+            return merchant[0] if merchant else {}
+        return merchant or {}
+
+
     def _convert_to_list_item(self, offer: dict) -> OfferListItem:
         """Convert offer dict to OfferListItem"""
-        merchant_data = offer.get('merchant', {})
+        merchant_data = self._get_merchant_dict(offer)
         category_data = offer.get('category')
-        
+        if isinstance(category_data, list):
+            category_data = category_data[0] if category_data else None
+
         return OfferListItem(
             id=offer['id'],
             title=offer['title'],
@@ -533,12 +576,14 @@ class OfferService:
             is_featured=offer.get('is_featured', False),
             created_at=offer['created_at']
         )
-    
+
     def _convert_to_detail(self, offer: dict) -> OfferDetail:
         """Convert offer dict to OfferDetail"""
-        merchant_data = offer.get('merchant', {})
+        merchant_data = self._get_merchant_dict(offer)
         category_data = offer.get('category')
-        
+        if isinstance(category_data, list):
+            category_data = category_data[0] if category_data else None
+
         return OfferDetail(
             id=offer['id'],
             title=offer['title'],
