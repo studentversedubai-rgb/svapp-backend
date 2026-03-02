@@ -172,18 +172,14 @@ class MerchantService:
         if not entitlement:
             raise ValueError("Entitlement not found")
         
-        # Check state — must be PENDING_CONFIRMATION (set by QR validate step)
-        # ACTIVE → PENDING_CONFIRMATION happens when student shows QR in the app
-        # PENDING_CONFIRMATION → USED happens here when merchant confirms with PIN + amount
-        if entitlement['state'] != EntitlementState.PENDING_CONFIRMATION.value:
+        # Check state
+        if entitlement['state'] not in [EntitlementState.ACTIVE.value, EntitlementState.PENDING_CONFIRMATION.value]:
             if entitlement['state'] == EntitlementState.USED.value:
                 raise ValueError("This entitlement has already been redeemed.")
             elif entitlement['state'] == EntitlementState.EXPIRED.value:
                 raise ValueError("This entitlement has expired.")
             elif entitlement['state'] == EntitlementState.VOIDED.value:
                 raise ValueError("This entitlement has been voided.")
-            elif entitlement['state'] == EntitlementState.ACTIVE.value:
-                raise ValueError("Student must show the QR code in the app first before you can confirm.")
             else:
                 raise ValueError(f"Entitlement cannot be confirmed (state: {entitlement['state']})")
         
