@@ -349,15 +349,17 @@ class OfferService:
                             latitude, longitude,
                             float(m_lat), float(m_lon)
                         )
-
                         # Filter by radius if specified
                         if radius_km is None or distance <= radius_km:
                             offer['distance_km'] = distance
                             offers_with_distance.append(offer)
+                        else:
+                            pass  # offer outside radius, skip
                     elif radius_km is None:
                         # Include offers without location if no radius filter
                         offer['distance_km'] = None
                         offers_with_distance.append(offer)
+                    # else: has radius but no coordinates — skip
 
                 eligible_offers = offers_with_distance
                 # Sort by distance
