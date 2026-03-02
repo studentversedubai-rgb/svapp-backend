@@ -35,6 +35,7 @@ class RegisterRequest(BaseModel):
     university: Optional[str] = Field(None, min_length=2, max_length=100, description="University name")
     phone_number: Optional[str] = Field(None, description="Phone number in international format (e.g. +971501234567)")
     age: Optional[int] = Field(None, ge=13, le=120, description="User age (13-120)")
+    date_of_birth: Optional[str] = Field(None, description="Date of birth in YYYY-MM-DD format")
     profile_picture_url: Optional[str] = Field(None, alias="avatar_url", description="Profile picture URL")
     device_id: Optional[str] = Field(None, min_length=5, max_length=255, description="Device ID for single device login")
 
@@ -142,15 +143,16 @@ class UserProfile(BaseModel):
     university: Optional[str] = None
     phone_number: Optional[str] = None
     age: Optional[int] = None
+    date_of_birth: Optional[str] = None  # YYYY-MM-DD from DB
     avatar_url: Optional[str] = None
     account_type: Optional[str] = "free"
     created_at: Optional[str] = None  # ISO timestamp — used as "Member Since" in app
 
     # Computed/Legacy fields
-    full_name: Optional[str] = None 
+    full_name: Optional[str] = None
 
     class Config:
-        populate_by_name = True  # Allow both camelCase and snake_case
+        populate_by_name = True
 
 class UserStats(BaseModel):
     """User statistics"""
