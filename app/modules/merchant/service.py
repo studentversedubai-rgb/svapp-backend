@@ -172,9 +172,20 @@ class MerchantService:
         if not entitlement:
             raise ValueError("Entitlement not found")
         
-        # Check state
-        if entitlement['state'] != EntitlementState.ACTIVE.value:
-            raise ValueError(f"Entitlement is {entitlement['state']}")
+        # Check state — must be PENDING_CONFIRMATION (set by QR validate step)
+        # ACTIVE → PENDING_CONFIRMATION happens when student shows QR in the app
+        # PENDING_CONFIRMATION → USED happens here when merchant confirms with PIN + amount
+        if entitlement['state'] != EntitlementState.PENDING_CONFIRMATION.value:
+            if entitlement['state'] == EntitlementState.USED.value:
+                raise ValueError("This entitlement has already been redeemed.")
+            elif entitlement['state'] == EntitlementState.EXPIRED.value:
+                raise ValueError("This entitlement has expired.")
+            elif entitlement['state'] == EntitlementState.VOIDED.value:
+                raise ValueError("This entitlement has been voided.")
+            elif entitlement['state'] == EntitlementState.ACTIVE.value:
+                raise ValueError("Student must show the QR code in the app first before you can confirm.")
+            else:
+                raise ValueError(f"Entitlement cannot be confirmed (state: {entitlement['state']})")
         
         # Get offer
         offer = await self._get_offer(entitlement['offer_id'])
@@ -344,8 +355,13 @@ class MerchantService:
     async def _get_user(self, user_id: str) -> Optional[Dict]:
         """Get user profile"""
         try:
-            result = self.supabase.table('users').select('full_name').eq('id', user_id).execute()
-            return result.data[0] if result.data else None
+            result = self.supabase.table('users').select('first_name, last_name, name').eq('id', user_id).execute()
+            if result.data:
+                u = result.data[0]
+                # Build display name from available fields
+                full_name = u.get('name') or ' '.join(filter(None, [u.get('first_name'), u.get('last_name')])) or 'Student'
+                return {'full_name': full_name}
+            return None
         except:
             return None
     
