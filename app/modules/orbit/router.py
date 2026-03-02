@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import get_current_user
 from app.core.config import Settings
 from app.core.ratelimit import RateLimiter
-from app.core.supabase import supabase
+from app.core.database import get_supabase_client
 from app.modules.orbit.schemas import (
     OrbitChatRequest,
     OrbitChatResponse
@@ -76,7 +76,10 @@ async def orbit_health():
 def _log_orbit_event(user_id: str, session_id: str, mode: str, metadata: dict):
     """Fire-and-forget analytics event — failures are non-fatal."""
     try:
-        supabase.table("analytics_events").insert({
+        client = get_supabase_client()
+        if not client:
+            return
+        client.table("analytics_events").insert({
             "user_id": user_id,
             "event_type": "orbit_chat",
             "event_data": {
@@ -89,6 +92,7 @@ def _log_orbit_event(user_id: str, session_id: str, mode: str, metadata: dict):
         }).execute()
     except Exception as exc:
         logger.warning(f"Failed to log orbit_chat event: {exc}")
+
 
 
 # ── Chat ───────────────────────────────────────────────────────────────────────
