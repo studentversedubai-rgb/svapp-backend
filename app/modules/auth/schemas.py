@@ -38,6 +38,7 @@ class RegisterRequest(BaseModel):
     date_of_birth: Optional[str] = Field(None, description="Date of birth in YYYY-MM-DD format")
     profile_picture_url: Optional[str] = Field(None, alias="avatar_url", description="Profile picture URL")
     device_id: Optional[str] = Field(None, min_length=5, max_length=255, description="Device ID for single device login")
+    password: Optional[str] = Field(None, min_length=8, description="User chosen password to set in Supabase Auth")
 
     @field_validator("name", "first_name", "last_name")
     @classmethod

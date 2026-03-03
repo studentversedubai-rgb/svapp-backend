@@ -325,14 +325,11 @@ class AuthService:
             # Prepare update data from request
             update_data = request.model_dump(exclude_unset=True, by_alias=True)
             
-            # Prevent email update to ensure consistency with Auth
+            # Remove fields that shouldn't go to public.users table
             if "email" in update_data:
                 del update_data["email"]
+            password_to_set = update_data.pop("password", None)
 
-            # Basic Validation: Check if device_id is already used by another user?
-            # Requirement: "Store device_id for single-device login enforcement"
-            # Does not explicitly say unique across ALL users, but implies binding.
-            
             update_data['account_type'] = 'free' # Default as per requirements
             
             # Update public.users
@@ -346,6 +343,18 @@ class AuthService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="User profile not found. Please verify OTP first."
                 )
+
+            # If user provided a password, update it in Supabase Auth
+            if password_to_set:
+                try:
+                    supabase.auth.admin.update_user_by_id(
+                        user_id,
+                        {"password": password_to_set}
+                    )
+                    logger.info(f"Updated Supabase Auth password for user: {user_id}")
+                except Exception as pw_err:
+                    # Non-fatal: profile is saved, only password update failed
+                    logger.error(f"Failed to update user password in Supabase Auth: {pw_err}")
             
             return result.data[0] # Return updated profile
 
@@ -433,9 +442,65 @@ class AuthService:
 
     async def login(self, email: str, password: str) -> Dict:
         """
-        Legacy login - kept for compatibility if needed
+        Login with email and password via Supabase Auth.
+        Checks that user exists in public.users before attempting sign-in.
         """
-        return await self.verify_otp(email, "000000") # Placeholder or implement actual login if needed
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
+        # 1. Check if user exists in public.users
+        try:
+            user_check = supabase.table("users").select("id, email").eq("email", email).execute()
+            if not user_check.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No account found with this email. Please sign up first."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"User lookup error during login: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error during login"
+            )
+
+        # 2. Sign in with Supabase Auth using the provided password
+        try:
+            auth_response = supabase.auth.sign_in_with_password({
+                "email": email,
+                "password": password
+            })
+        except Exception as e:
+            logger.error(f"Supabase sign_in_with_password error: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+
+        if not auth_response or not auth_response.user or not auth_response.session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+
+        user_id = str(auth_response.user.id)
+        access_token = auth_response.session.access_token
+
+        return {
+            "status": "success",
+            "message": "Login successful",
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user_id,
+                "email": email
+            }
+        }
         
 # Singleton instance
 auth_service = AuthService()
