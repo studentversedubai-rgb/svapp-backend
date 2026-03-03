@@ -306,13 +306,14 @@ class AuthService:
                 detail=f"Authentication error: {str(e)}"
             )
 
-    async def complete_registration(self, user_id: str, request: RegisterRequest) -> Dict[str, Any]:
+    async def complete_registration(self, user_id: str, request: RegisterRequest, access_token: str = None) -> Dict[str, Any]:
         """
         Complete user registration by updating profile details.
         
         Args:
             user_id: UUID of the authenticated user
             request: Registration details including name, university, device_id, etc.
+            access_token: The user's JWT (used to set their chosen password without admin rights)
         """
         supabase = get_supabase_client()
         if not supabase:
@@ -344,17 +345,38 @@ class AuthService:
                     detail="User profile not found. Please verify OTP first."
                 )
 
-            # If user provided a password, update it in Supabase Auth
-            if password_to_set:
+            # --- Set the user's chosen password ---
+            # Strategy: Use user's own JWT to call update_user() — no admin rights needed.
+            # This avoids the "User not allowed" error from admin.update_user_by_id.
+            if password_to_set and access_token:
+                password_updated = False
+                
+                # Attempt 1: User-scoped client with their JWT session
                 try:
-                    supabase.auth.admin.update_user_by_id(
-                        user_id,
-                        {"password": password_to_set}
-                    )
-                    logger.info(f"Updated Supabase Auth password for user: {user_id}")
+                    import os as _os
+                    from supabase import create_client as _create_client
+                    _url = _os.getenv("SUPABASE_URL")
+                    _key = _os.getenv("SUPABASE_ANON_KEY") or _os.getenv("SUPABASE_KEY") or _os.getenv("SUPABASE_SERVICE_KEY")
+                    if _url and _key:
+                        user_client = _create_client(_url, _key)
+                        user_client.auth.set_session(access_token, access_token)
+                        user_client.auth.update_user({"password": password_to_set})
+                        logger.info(f"Password set via user session for: {user_id}")
+                        password_updated = True
                 except Exception as pw_err:
-                    # Non-fatal: profile is saved, only password update failed
-                    logger.error(f"Failed to update user password in Supabase Auth: {pw_err}")
+                    logger.error(f"User-scoped password update failed: {pw_err}")
+                
+                # Attempt 2: Fall back to admin API
+                if not password_updated:
+                    try:
+                        supabase.auth.admin.update_user_by_id(
+                            user_id,
+                            {"password": password_to_set}
+                        )
+                        logger.info(f"Password set via admin API for: {user_id}")
+                    except Exception as admin_err:
+                        logger.error(f"Admin password update also failed: {admin_err}")
+                        # Non-fatal — profile is saved, user can reset password if needed
             
             return result.data[0] # Return updated profile
 

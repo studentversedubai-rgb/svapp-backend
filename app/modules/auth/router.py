@@ -5,6 +5,7 @@ Handles OTP-based authentication and Profile Management.
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.modules.auth.schemas import (
     SendOTPRequest, 
     VerifyOTPRequest,
@@ -52,7 +53,8 @@ async def verify_otp(request: VerifyOTPRequest):
 @router.post("/register", response_model=ProfileResponse)
 async def register(
     request: RegisterRequest, 
-    current_user: Dict = Depends(get_current_user_no_device_check)
+    current_user: Dict = Depends(get_current_user_no_device_check),
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
 ):
     """
     Complete user registration / Update profile.
@@ -60,7 +62,9 @@ async def register(
     Requires Authentication (JWT) obtained from verify-otp.
     Updates the authenticated user's profile with required details.
     """
-    updated_user = await auth_service.complete_registration(current_user["id"], request)
+    updated_user = await auth_service.complete_registration(
+        current_user["id"], request, access_token=credentials.credentials
+    )
     
     # Map to UserProfile
     profile = UserProfile(**updated_user)
