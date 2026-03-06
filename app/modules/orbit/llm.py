@@ -76,12 +76,12 @@ Context Data (Real Database Results):
 {offers_json}
 
 Task:
-1. Select the best 3 offers from the Context Data above that match the User Query.
-2. Write a fun, engaging intro message (2-3 sentences).
+1. Select the best offers from the Context Data above (up to 3) that best match the User Query.
+2. Write a warm, enthusiastic intro message (2-3 sentences) — react to what they're looking for, express genuine excitement, and make them feel like you found something great for them. Sound like a friend, not a search result.
 3. Return ONLY a JSON object in this EXACT format (no markdown, no code blocks):
 
 {{
-  "content": "Your fun intro text here...",
+  "content": "Your warm, excited intro text here...",
   "plans": [
      {{
        "id": "OFFER_ID_FROM_CONTEXT",
@@ -320,8 +320,8 @@ or
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=0.8,  # Higher temperature for creativity
-                max_tokens=150
+                temperature=0.85,  # Warm, personality-driven responses
+                max_tokens=200
             )
             
             content = response.choices[0].message.content.strip()

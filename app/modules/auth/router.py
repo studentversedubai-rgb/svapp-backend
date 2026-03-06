@@ -4,7 +4,7 @@ Authentication Router
 Handles OTP-based authentication and Profile Management.
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.modules.auth.schemas import (
     SendOTPRequest, 
@@ -41,12 +41,13 @@ async def send_otp(request: SendOTPRequest):
 
 
 @router.post("/verify-otp", response_model=AuthResponse)
-async def verify_otp(request: VerifyOTPRequest):
+async def verify_otp(request_body: VerifyOTPRequest, request: Request):
     """
     Verify OTP and authenticate user.
     Returns Access Token.
     """
-    result = await auth_service.verify_otp(request.email, request.code)
+    device_id = request.headers.get("X-Device-ID", "")
+    result = await auth_service.verify_otp(request_body.email, request_body.code, device_id)
     return AuthResponse(data=result)
 
 
@@ -74,11 +75,12 @@ async def register(
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(request: LoginRequest):
+async def login(request_body: LoginRequest, request: Request):
     """
     Legacy Login (Email/Password) - Not primary flow.
     """
-    result = await auth_service.login(request.email, request.password)
+    device_id = request.headers.get("X-Device-ID", "")
+    result = await auth_service.login(request_body.email, request_body.password, device_id)
     return AuthResponse(data=result)
 
 
@@ -127,6 +129,7 @@ async def get_analytics(current_user: Dict = Depends(get_current_user)):
 @router.post("/logout")
 async def logout(current_user: Dict = Depends(get_current_user)):
     """
-    Logout user (stateless, client should discard token).
+    Logout user - marks them as logged out so they can sign in from any device.
     """
+    await auth_service.logout_user(current_user["id"])
     return {"message": "Logged out successfully"}

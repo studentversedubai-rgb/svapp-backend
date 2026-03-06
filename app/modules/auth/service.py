@@ -124,7 +124,7 @@ class AuthService:
 
         return {"message": "OTP sent"}
 
-    async def verify_otp(self, email: str, code: str) -> Dict[str, Any]:
+    async def verify_otp(self, email: str, code: str, device_id: str = "") -> Dict[str, Any]:
         """
         Verify OTP code and create/authenticate user.
         
@@ -270,16 +270,32 @@ class AuthService:
             
             access_token = auth_response.session.access_token
             
-            # --- Sync to public.users table ---
+            # --- Sync to public.users table & enforce single-session login ---
             try:
-                user_check = supabase.table("users").select("id").eq("id", user_id).execute()
+                user_check = supabase.table("users").select("id, logged_in").eq("id", user_id).execute()
                 if not user_check.data:
+                    # New user — insert record; logged_in defaults to false until register completes
                     supabase.table("users").insert({
                         "id": user_id,
                         "email": email,
                         "account_type": "free"
                     }).execute()
                     logger.info(f"Created user in public.users: {email}")
+                else:
+                    # Existing user — enforce single active session
+                    if user_check.data[0].get("logged_in"):
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="You are already logged in on another device. Please logout first."
+                        )
+                    # Mark as logged in and update device binding
+                    update_payload: dict = {"logged_in": True}
+                    if device_id:
+                        update_payload["device_id"] = device_id
+                    supabase.table("users").update(update_payload).eq("id", user_id).execute()
+                    logger.info(f"User logged in, device updated: {email}")
+            except HTTPException:
+                raise
             except Exception as sync_err:
                 logger.error(f"Error syncing to public.users: {sync_err}")
             
@@ -331,7 +347,8 @@ class AuthService:
                 del update_data["email"]
             password_to_set = update_data.pop("password", None)
 
-            update_data['account_type'] = 'free' # Default as per requirements
+            update_data['account_type'] = 'free'  # Default as per requirements
+            update_data['logged_in'] = True  # Mark as logged in on registration
             
             # Update public.users
             result = supabase.table("users").update(update_data).eq("id", user_id).execute()
@@ -462,10 +479,10 @@ class AuthService:
             # Return empty stats on error
             return UserStats()
 
-    async def login(self, email: str, password: str) -> Dict:
+    async def login(self, email: str, password: str, device_id: str = "") -> Dict:
         """
         Login with email and password via Supabase Auth.
-        Checks that user exists in public.users before attempting sign-in.
+        Checks that user exists in public.users and is not already logged in elsewhere.
         """
         supabase = get_supabase_client()
         if not supabase:
@@ -474,13 +491,18 @@ class AuthService:
                 detail="Database connection error"
             )
 
-        # 1. Check if user exists in public.users
+        # 1. Check if user exists and is not already logged in on another device
         try:
-            user_check = supabase.table("users").select("id, email").eq("email", email).execute()
+            user_check = supabase.table("users").select("id, email, logged_in").eq("email", email).execute()
             if not user_check.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="No account found with this email. Please sign up first."
+                )
+            if user_check.data[0].get("logged_in"):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="You are already logged in on another device. Please logout first."
                 )
         except HTTPException:
             raise
@@ -513,6 +535,16 @@ class AuthService:
         user_id = str(auth_response.user.id)
         access_token = auth_response.session.access_token
 
+        # 3. Mark user as logged in and update device binding
+        try:
+            update_payload: dict = {"logged_in": True}
+            if device_id:
+                update_payload["device_id"] = device_id
+            supabase.table("users").update(update_payload).eq("id", user_id).execute()
+            logger.info(f"User logged in via password: {email}")
+        except Exception as e:
+            logger.error(f"Failed to update logged_in on login: {e}")
+
         return {
             "status": "success",
             "message": "Login successful",
@@ -523,6 +555,19 @@ class AuthService:
                 "email": email
             }
         }
+
+    async def logout_user(self, user_id: str) -> None:
+        """
+        Mark user as logged out so they can sign in from any device next time.
+        """
+        supabase = get_supabase_client()
+        if not supabase:
+            return
+        try:
+            supabase.table("users").update({"logged_in": False}).eq("id", user_id).execute()
+            logger.info(f"User logged out: {user_id}")
+        except Exception as e:
+            logger.error(f"Logout update error: {e}")
         
 # Singleton instance
 auth_service = AuthService()
