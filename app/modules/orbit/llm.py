@@ -5,6 +5,8 @@ Uses LLM to present activity plans in natural language.
 LLM only formats/presents - does NOT generate offer data.
 """
 
+import asyncio
+import functools
 import json
 import logging
 from typing import List, Dict
@@ -121,14 +123,10 @@ Remember: Use ONLY offer IDs from the Context Data above. Return clean JSON only
             # Parse JSON
             parsed = json.loads(cleaned)
             
-            # Validate required fields
-            if "content" not in parsed:
-                raise ValueError("LLM response missing 'content' field")
-            if "plans" not in parsed:
-                raise ValueError("LLM response missing 'plans' field")
-            
-            # Ensure plans is a list
-            if not isinstance(parsed["plans"], list):
+            # Ensure required fields have safe defaults
+            if "content" not in parsed or not parsed.get("content"):
+                parsed["content"] = "Here's what I found for you! 🎯"
+            if "plans" not in parsed or not isinstance(parsed["plans"], list):
                 parsed["plans"] = []
             
             logger.info(f"Successfully parsed LLM response with {len(parsed['plans'])} plans")
@@ -198,28 +196,37 @@ or
             user_prompt = f"Classify this message: \"{user_message}\""
             
             # Call LLM with JSON mode if supported
+            loop = asyncio.get_event_loop()
             try:
                 # Try with response_format for JSON mode
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.1,  # Extremely low for consistent output
-                    max_tokens=50,
-                    response_format={"type": "json_object"}  # Force JSON mode
+                response = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        self.client.chat.completions.create,
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.1,
+                        max_tokens=50,
+                        response_format={"type": "json_object"},
+                    )
                 )
-            except:
+            except Exception:
                 # Fallback without JSON mode
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=50
+                response = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        self.client.chat.completions.create,
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.1,
+                        max_tokens=50,
+                    )
                 )
             
             content = response.choices[0].message.content.strip()
@@ -316,12 +323,17 @@ or
             
             messages.append({"role": "user", "content": user_message})
             
-            # Generate response
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.85,  # Warm, personality-driven responses
-                max_tokens=200
+            # Run the synchronous OpenAI call in an executor so it doesn't block the event loop
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self.client.chat.completions.create,
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.85,
+                    max_tokens=200,
+                )
             )
             
             content = response.choices[0].message.content.strip()
@@ -365,12 +377,17 @@ or
             
             messages.append({"role": "user", "content": user_prompt})
             
-            # Call LLM
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=600
+            # Run the synchronous OpenAI call in an executor so it doesn't block the event loop
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    self.client.chat.completions.create,
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=900,
+                )
             )
             
             content = response.choices[0].message.content.strip()
@@ -383,9 +400,7 @@ or
             
         except Exception as e:
             logger.error(f"Response generation with history failed: {e}", exc_info=True)
-            return {
-                "content": "Oops! Something went wrong. Can you try asking again?",
-                "plans": []
-            }
+            # Re-raise so the caller (service) can decide the fallback message
+            raise
     
 

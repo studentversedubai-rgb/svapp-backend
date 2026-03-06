@@ -109,6 +109,14 @@ class OfferRetrieval:
                     offer['_relevance_score'] = score
                     scored_offers.append(offer)
             
+            # Fallback: if keyword matching returned nothing, return all active offers
+            # This ensures plan/find mode always has content to work with
+            if not scored_offers and result.data:
+                logger.info("No keyword matches found — using unfiltered fallback offers")
+                for offer in result.data:
+                    offer['_relevance_score'] = 0.0
+                scored_offers = result.data
+            
             # Sort by relevance score (highest first)
             scored_offers.sort(key=lambda x: x['_relevance_score'], reverse=True)
             

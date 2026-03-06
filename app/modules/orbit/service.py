@@ -110,10 +110,10 @@ class OrbitService:
                     # Vague request - use broad search terms
                     search_query = f"{message} food drinks entertainment"
                     logger.info(f"Vague request - using broad search: {search_query}")
-                elif mode == OrbitMode.PLAN and len(message.split()) <= 4:
-                    # Plan mode with short query - also use broad search
-                    search_query = f"{message} food drinks entertainment activities"
-                    logger.info(f"Plan mode short query - using broad search: {search_query}")
+                elif mode == OrbitMode.PLAN:
+                    # Plan mode: always augment the query so retrieval pulls a wide variety
+                    search_query = f"{message} food drinks coffee entertainment activities beauty salon fitness"
+                    logger.info(f"Plan mode - using augmented search: {search_query}")
                 else:
                     search_query = message
                 
@@ -145,13 +145,21 @@ class OrbitService:
                     # Get mode-specific system prompt
                     system_prompt = get_full_system_prompt(mode)
                     
-                    # Generate response with offers using mode-specific prompt
-                    llm_response = await self.llm.generate_response_with_history(
-                        user_message=message,
-                        offers=offers,
-                        conversation_history=history,
-                        system_prompt=system_prompt
-                    )
+                    try:
+                        # Generate response with offers using mode-specific prompt
+                        llm_response = await self.llm.generate_response_with_history(
+                            user_message=message,
+                            offers=offers,
+                            conversation_history=history,
+                            system_prompt=system_prompt
+                        )
+                    except Exception as llm_err:
+                        logger.error(f"LLM call failed: {llm_err}", exc_info=True)
+                        # Graceful degradation: surface the offers without LLM prose
+                        llm_response = {
+                            "content": "I found some great deals for you! 🎯 Check these out:",
+                            "plans": [{"id": o.get("id"), "title": o.get("title", ""), "description": o.get("description", ""), "tags": {}, "highlights": []} for o in offers[:3] if o.get("id")]
+                        }
                     
                     # Validate offer IDs and inject location data
                     validated_plans = self._validate_offer_ids(
@@ -241,7 +249,7 @@ class OrbitService:
                 try:
                     # Get real offer data from database
                     real_offer = offers_by_id[offer_id]
-                    merchant = real_offer.get('merchant', {})
+                    merchant = real_offer.get('merchant') or {}
                     
                     # Inject REAL location data from database
                     # LLM should NOT fabricate this data
