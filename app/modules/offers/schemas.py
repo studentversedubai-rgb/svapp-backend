@@ -37,6 +37,7 @@ class MerchantBasic(BaseModel):
     logo_url: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    color: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -46,6 +47,20 @@ class MerchantDetail(MerchantBasic):
     """Detailed merchant info"""
     description: Optional[str] = None
     address: Optional[str] = None
+    
+    @field_validator('color')
+    @classmethod
+    def validate_color(cls, v: Optional[str]):
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        # Accept 6-hex characters only
+        import re
+        if not re.match(r'^[0-9A-Fa-f]{6}$', v):
+            raise ValueError('color must be a 6-character hex string (e.g. FF00AA)')
+        return v
     
     class Config:
         from_attributes = True
