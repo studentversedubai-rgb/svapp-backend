@@ -2,6 +2,14 @@
 Database Module
 
 Manages connection to Supabase.
+
+IMPORTANT: The admin client (get_supabase_client) must NEVER have user sessions
+injected into it via sign_in_with_password or set_session — this contaminates the
+shared singleton and causes PGRST303 "JWT expired" errors on subsequent requests.
+
+For any operation that calls supabase.auth.sign_in_with_password() or
+supabase.auth.set_session(), use create_fresh_supabase_client() to get an
+isolated client that won't pollute the global admin client.
 """
 
 import os
@@ -10,34 +18,65 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-class DatabaseManager:
-    """
-    Manages database connections (Supabase)
-    """
-    
-    def __init__(self):
-        """Initialize database connections"""
-        self.supabase: Client = None
-        
-        supabase_url = os.getenv("SUPABASE_URL")
-        # Use SERVICE_KEY preferably for backend operations to allow admin tasks
-        supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
-        
-        if not supabase_url or not supabase_key:
-            print("WARNING: SUPABASE_URL or SUPABASE_KEY not found in environment")
-            return
-            
-        try:
-            # When using SERVICE_KEY, we should be careful with auth flows.
-            # But the client needs to perform admin tasks.
-            self.supabase = create_client(supabase_url, supabase_key)
-            print("INFO: Initialized Supabase client")
-        except Exception as e:
-            print(f"ERROR: Failed to initialize Supabase client: {e}")
+_supabase_url: str = os.getenv("SUPABASE_URL", "")
+_supabase_service_key: str = (
+    os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
+)
 
-# Global database manager instance
-db_manager = DatabaseManager()
+# ---------------------------------------------------------------------------
+# Singleton admin client — used for table queries and admin auth operations.
+# NEVER call sign_in_with_password / set_session on this client.
+# ---------------------------------------------------------------------------
+_admin_client: Client | None = None
 
-def get_supabase_client() -> Client:
-    """Get Supabase client instance"""
-    return db_manager.supabase
+
+def _build_admin_client() -> Client | None:
+    if not _supabase_url or not _supabase_service_key:
+        print("WARNING: SUPABASE_URL or SUPABASE_SERVICE_KEY not found in environment")
+        return None
+    try:
+        client = create_client(_supabase_url, _supabase_service_key)
+        print("INFO: Initialized Supabase admin client")
+        return client
+    except Exception as e:
+        print(f"ERROR: Failed to initialize Supabase client: {e}")
+        return None
+
+
+_admin_client = _build_admin_client()
+
+
+def get_supabase_client() -> Client | None:
+    """
+    Return the shared admin Supabase client.
+
+    Use this for:
+    - Table queries (supabase.table(...))
+    - supabase.auth.admin.* operations
+    - supabase.auth.get_user(token)
+
+    Do NOT call sign_in_with_password / set_session on this client.
+    """
+    return _admin_client
+
+
+def create_fresh_supabase_client() -> Client | None:
+    """
+    Create and return a brand-new Supabase client instance.
+
+    Use this whenever you need to call:
+    - supabase.auth.sign_in_with_password(...)
+    - supabase.auth.sign_up(...)
+    - supabase.auth.set_session(...)
+    - supabase.auth.update_user(...)
+
+    A fresh client keeps user session state isolated so the shared admin
+    client is never contaminated.
+    """
+    if not _supabase_url or not _supabase_service_key:
+        return None
+    try:
+        return create_client(_supabase_url, _supabase_service_key)
+    except Exception as e:
+        print(f"ERROR: Failed to create fresh Supabase client: {e}")
+        return None

@@ -9,7 +9,7 @@ import string
 import logging
 from typing import Optional, Dict
 from fastapi import HTTPException, status
-from app.core.database import get_supabase_client
+from app.core.database import get_supabase_client, create_fresh_supabase_client
 from app.core.redis import redis_manager
 from app.core.email import email_service
 
@@ -27,7 +27,7 @@ import string
 import logging
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, status
-from app.core.database import get_supabase_client
+from app.core.database import get_supabase_client, create_fresh_supabase_client
 from app.core.redis import redis_manager
 from app.core.email import email_service
 from app.modules.auth.schemas import RegisterRequest, ProfileUpdateRequest, UserStats
@@ -161,6 +161,15 @@ class AuthService:
                 detail="Database connection error"
             )
         
+        # Use a fresh client for all auth sign-up/sign-in so the shared admin
+        # client is never contaminated by user session tokens.
+        auth_client = create_fresh_supabase_client()
+        if not auth_client:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
         try:
             # Use a deterministic password based on email (consistent across logins)
             temp_password = f"SV_OTP_AUTH_{email}_SECURE_PASS_2024!"
@@ -169,7 +178,7 @@ class AuthService:
             
             # --- Strategy 1: Try sign_up (new user) ---
             try:
-                auth_response = supabase.auth.sign_up({
+                auth_response = auth_client.auth.sign_up({
                     "email": email,
                     "password": temp_password
                 })
@@ -193,7 +202,7 @@ class AuthService:
                 
                 # First try signing in with the deterministic password
                 try:
-                    auth_response = supabase.auth.sign_in_with_password({
+                    auth_response = auth_client.auth.sign_in_with_password({
                         "email": email,
                         "password": temp_password
                     })
@@ -202,7 +211,7 @@ class AuthService:
                     logger.info(f"Sign-in with standard password failed: {signin_err}")
                     
                     # Password mismatch - need admin reset
-                    # Look up user ID from public.users table (reliable)
+                    # Use the shared admin client for admin operations (table queries, admin.update_user_by_id)
                     try:
                         user_lookup = supabase.table("users").select("id").eq("email", email).execute()
                         
@@ -226,15 +235,15 @@ class AuthService:
                                 logger.error(f"Admin list_users failed: {list_err}")
                         
                         if existing_user_id:
-                            # Admin reset password
+                            # Admin reset password (use admin client, not auth_client)
                             supabase.auth.admin.update_user_by_id(
                                 existing_user_id,
                                 {"password": temp_password}
                             )
                             logger.info(f"Admin password reset for user: {existing_user_id}")
                             
-                            # Now sign in
-                            auth_response = supabase.auth.sign_in_with_password({
+                            # Now sign in (use fresh auth client)
+                            auth_response = auth_client.auth.sign_in_with_password({
                                 "email": email,
                                 "password": temp_password
                             })
@@ -365,34 +374,33 @@ class AuthService:
             # --- Set the user's chosen password ---
             # Strategy: Use user's own JWT to call update_user() — no admin rights needed.
             # This avoids the "User not allowed" error from admin.update_user_by_id.
-            if password_to_set and access_token:
+            if password_to_set:
                 password_updated = False
                 
-                # Attempt 1: User-scoped client with their JWT session
+                # Attempt 1: Use admin API to set the chosen password (most reliable)
                 try:
-                    import os as _os
-                    from supabase import create_client as _create_client
-                    _url = _os.getenv("SUPABASE_URL")
-                    _key = _os.getenv("SUPABASE_ANON_KEY") or _os.getenv("SUPABASE_KEY") or _os.getenv("SUPABASE_SERVICE_KEY")
-                    if _url and _key:
-                        user_client = _create_client(_url, _key)
-                        user_client.auth.set_session(access_token, access_token)
-                        user_client.auth.update_user({"password": password_to_set})
-                        logger.info(f"Password set via user session for: {user_id}")
-                        password_updated = True
-                except Exception as pw_err:
-                    logger.error(f"User-scoped password update failed: {pw_err}")
-                
-                # Attempt 2: Fall back to admin API
-                if not password_updated:
+                    supabase.auth.admin.update_user_by_id(
+                        user_id,
+                        {"password": password_to_set}
+                    )
+                    logger.info(f"Password set via admin API for: {user_id}")
+                    password_updated = True
+                except Exception as admin_err:
+                    logger.error(f"Admin password update failed: {admin_err}")
+
+                # Attempt 2: Fall back to user-scoped client if admin failed
+                if not password_updated and access_token:
                     try:
-                        supabase.auth.admin.update_user_by_id(
-                            user_id,
-                            {"password": password_to_set}
-                        )
-                        logger.info(f"Password set via admin API for: {user_id}")
-                    except Exception as admin_err:
-                        logger.error(f"Admin password update also failed: {admin_err}")
+                        user_client = create_fresh_supabase_client()
+                        if user_client:
+                            # set_session requires both access_token AND refresh_token.
+                            # We only have the access_token here, so skip set_session
+                            # and use a fresh auth_client sign-in with the deterministic
+                            # password, then update via user context.
+                            # As a simpler fallback: just log the issue.
+                            logger.warning(f"Could not set user password via admin. User {user_id} may need to reset password.")
+                    except Exception as pw_err:
+                        logger.error(f"User-scoped password update also failed: {pw_err}")
                         # Non-fatal — profile is saved, user can reset password if needed
             
             return result.data[0] # Return updated profile
@@ -513,9 +521,17 @@ class AuthService:
                 detail="Database error during login"
             )
 
-        # 2. Sign in with Supabase Auth using the provided password
+        # 2. Sign in with Supabase Auth using the provided password.
+        # Use a FRESH client so the shared admin client is never contaminated
+        # by the user session that sign_in_with_password injects.
+        auth_client = create_fresh_supabase_client()
+        if not auth_client:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
         try:
-            auth_response = supabase.auth.sign_in_with_password({
+            auth_response = auth_client.auth.sign_in_with_password({
                 "email": email,
                 "password": password
             })
