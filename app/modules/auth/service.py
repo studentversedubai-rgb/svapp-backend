@@ -179,7 +179,11 @@ class AuthService:
 
         try:
             # --- Step 1: Set chosen password (abort if this fails) ---
+            # IMPORTANT: admin.update_user_by_id with a new password INVALIDATES all
+            # existing Supabase sessions for this user. We must re-sign-in immediately
+            # after to get a fresh token, which the frontend will store.
             password_to_set = request.password
+            new_access_token = None
             if password_to_set:
                 try:
                     supabase.auth.admin.update_user_by_id(user_id, {"password": password_to_set})
@@ -190,6 +194,21 @@ class AuthService:
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail="Failed to set account password. Please try again."
                     )
+
+                # Re-authenticate to get a fresh token (old one was invalidated above)
+                try:
+                    auth_client = create_fresh_supabase_client()
+                    if auth_client:
+                        sign_in = auth_client.auth.sign_in_with_password({
+                            "email": request.email,
+                            "password": password_to_set
+                        })
+                        if sign_in and sign_in.session:
+                            new_access_token = sign_in.session.access_token
+                            logger.info(f"Re-authenticated after password set for: {user_id}")
+                except Exception as reauth_err:
+                    logger.error(f"Re-auth after password set failed: {reauth_err}")
+                    # Non-fatal here — profile will still save, but frontend must handle token
 
             # --- Step 2: Build DB update payload ---
             # Only send columns that actually exist in public.users
@@ -215,7 +234,12 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found. Please verify OTP first.")
 
             logger.info(f"Registration completed for user: {user_id}")
-            return result.data[0]
+            profile = result.data[0]
+            # Include fresh token (password update invalidated the old one)
+            if new_access_token:
+                profile["access_token"] = new_access_token
+                profile["token_type"] = "bearer"
+            return profile
 
         except HTTPException:
             raise

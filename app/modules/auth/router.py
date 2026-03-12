@@ -51,27 +51,37 @@ async def verify_otp(request_body: VerifyOTPRequest, request: Request):
     return AuthResponse(data=result)
 
 
-@router.post("/register", response_model=ProfileResponse)
+@router.post("/register")
 async def register(
-    request: RegisterRequest, 
+    request: RegisterRequest,
     current_user: Dict = Depends(get_current_user_no_device_check),
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
 ):
     """
     Complete user registration / Update profile.
-    
+
     Requires Authentication (JWT) obtained from verify-otp.
-    Updates the authenticated user's profile with required details.
+    Returns the updated profile AND a fresh access_token (the old one is
+    invalidated by Supabase when the password is set).
     """
-    updated_user = await auth_service.complete_registration(
+    result = await auth_service.complete_registration(
         current_user["id"], request, access_token=credentials.credentials
     )
-    
-    # Map to UserProfile
-    profile = UserProfile(**updated_user)
-    profile.full_name = f"{profile.first_name} {profile.last_name}"
-    
-    return ProfileResponse(data=profile)
+
+    # Extract token fields before building UserProfile (UserProfile doesn't have them)
+    new_token = result.pop("access_token", None)
+    result.pop("token_type", None)
+
+    profile = UserProfile(**result)
+    if profile.first_name and profile.last_name:
+        profile.full_name = f"{profile.first_name} {profile.last_name}"
+
+    response_data: Dict[str, Any] = profile.model_dump()
+    if new_token:
+        response_data["access_token"] = new_token
+        response_data["token_type"] = "bearer"
+
+    return {"ok": True, "data": response_data}
 
 
 @router.post("/login", response_model=AuthResponse)
