@@ -127,9 +127,12 @@ async def get_analytics(current_user: Dict = Depends(get_current_user)):
 
 
 @router.post("/logout")
-async def logout(current_user: Dict = Depends(get_current_user)):
+async def logout(
+    current_user: Dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+):
     """
-    Logout user - marks them as logged out so they can sign in from any device.
+    Logout user — clears device binding and invalidates the Supabase JWT.
     """
-    await auth_service.logout_user(current_user["id"])
+    await auth_service.logout_user(current_user["id"], access_token=credentials.credentials)
     return {"message": "Logged out successfully"}
