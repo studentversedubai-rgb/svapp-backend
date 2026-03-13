@@ -8,7 +8,7 @@ import logging
 from typing import Optional, Dict
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from app.core.database import get_supabase_client
+from app.core.database import get_supabase_client, create_fresh_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +45,14 @@ async def get_current_user(
         )
     
     token = credentials.credentials
-    
+
     try:
-        # Validate token with Supabase Auth
-        auth_response = supabase.auth.get_user(token)
+        # Validate token with a FRESH client.
+        # The shared admin client caches session state from sign_in_with_password calls
+        # made during registration/login. Using it for get_user() can cause it to validate
+        # the token against a stale/dead session → 401 even with a valid token.
+        fresh = create_fresh_supabase_client()
+        auth_response = fresh.auth.get_user(token)
         
         if not auth_response.user:
             raise HTTPException(
@@ -142,9 +146,11 @@ async def get_current_user_no_device_check(
         )
     
     token = credentials.credentials
-    
+
     try:
-        auth_response = supabase.auth.get_user(token)
+        # Use fresh client here too — same reason as get_current_user above
+        fresh = create_fresh_supabase_client()
+        auth_response = fresh.auth.get_user(token)
         
         if not auth_response.user:
             raise HTTPException(
