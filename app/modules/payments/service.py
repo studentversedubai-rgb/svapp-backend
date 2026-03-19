@@ -1,0 +1,384 @@
+"""
+Payments Service
+
+Mock payment flow for ticket bookings (no real Stripe integration).
+Sends confirmation emails via existing Postmark setup and provides
+admin CSV export.
+"""
+
+import csv
+import io
+import logging
+import os
+import uuid as uuid_lib
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import UUID
+
+from postmarker.core import PostmarkClient
+
+from app.core.database import get_supabase_client
+from app.modules.payments.schemas import (
+    CreateMockOrderRequest,
+    CreateMockOrderResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+# ================================
+# EMAIL CONFIGURATION
+# ================================
+
+POSTMARK_API_KEY = os.getenv("POSTMARK_API_KEY", "")
+FROM_ADDRESS = "support@studentverse.app"
+INTERNAL_BOOKINGS_EMAIL = os.getenv("INTERNAL_BOOKINGS_EMAIL", "")
+
+
+class PaymentService:
+    """Handles mock payment order creation, email notifications, and CSV export"""
+
+    def __init__(self):
+        self.supabase = get_supabase_client()
+
+    # ================================
+    # CREATE MOCK ORDER
+    # ================================
+
+    async def create_mock_order(
+        self,
+        user_id: str,
+        user_name: str,
+        user_email: str,
+        payload: CreateMockOrderRequest,
+    ) -> CreateMockOrderResponse:
+        """
+        Create a mock ticket order — simulates instant payment without Stripe.
+
+        Steps:
+        1. Validate the ticket (must be active and within pricing period)
+        2. Calculate total_price
+        3. Generate a fake mock_pi_ payment intent ID
+        4. Insert ticket_records row with stripe_payment_status='paid', status='paid'
+        5. Send confirmation emails (failures are logged, never crash the response)
+
+        Args:
+            user_id:    Authenticated user ID (from JWT).
+            user_name:  User's display name (from public.users).
+            user_email: User's email address (from public.users / auth).
+            payload:    Validated request body.
+
+        Returns:
+            CreateMockOrderResponse
+
+        Raises:
+            ValueError: If ticket not found, not active, or outside pricing period.
+            Exception:  On database errors.
+        """
+        # 1. Fetch and validate the ticket
+        ticket = await self._get_active_ticket(payload.ticket_id)
+
+        merchant_name = ticket.get("merchant_name", "Unknown Merchant")
+        ticket_details = ticket.get("ticket_details", "")
+
+        # 2. Calculate total
+        our_price = float(ticket["our_price"])
+        total_price = round(our_price * payload.quantity, 2)
+
+        # 3. Generate fake payment intent ID
+        mock_payment_intent_id = f"mock_pi_{uuid_lib.uuid4().hex}"
+
+        # 4. Insert ticket_records row — already marked as paid
+        record_data = {
+            "ticket_id": str(payload.ticket_id),
+            "user_id": user_id,
+            "contact_name": user_name,
+            "contact_email": user_email,
+            "contact_phone": payload.contact_phone,
+            "visit_date": payload.visit_date.isoformat() if payload.visit_date else None,
+            "visit_time": str(payload.visit_time) if payload.visit_time else None,
+            "quantity": payload.quantity,
+            "special_requests": payload.special_requests,
+            "unit_price": our_price,
+            "total_price": total_price,
+            "stripe_payment_intent_id": mock_payment_intent_id,
+            "stripe_payment_status": "paid",
+            "status": "paid",
+        }
+
+        insert_result = (
+            self.supabase.table("ticket_records").insert(record_data).execute()
+        )
+
+        if not insert_result.data:
+            raise Exception("Failed to create ticket record in database")
+
+        record = insert_result.data[0]
+
+        # 5. Send emails — failures are logged but never crash the response
+        # (record is already saved at this point)
+        try:
+            self._send_confirmation_email_to_user(record, merchant_name, ticket_details)
+        except Exception as e:
+            logger.error(f"Failed to send user confirmation email: {e}", exc_info=True)
+
+        try:
+            self._send_internal_booking_email(record, merchant_name, ticket_details)
+        except Exception as e:
+            logger.error(f"Failed to send internal booking email: {e}", exc_info=True)
+
+        return CreateMockOrderResponse(
+            record_id=UUID(record["id"]),
+            mock_payment_intent_id=mock_payment_intent_id,
+            total_price=total_price,
+            status="paid",
+            message="Mock payment successful. This is a test flow — no real payment was processed.",
+        )
+
+    # ================================
+    # ADMIN CSV EXPORT
+    # ================================
+
+    async def export_records_csv(
+        self,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+    ) -> str:
+        """
+        Admin: export all ticket_records (joined with tickets) as CSV.
+
+        Args:
+            from_date: Optional ISO date string (YYYY-MM-DD) — filter by created_at >=.
+            to_date:   Optional ISO date string (YYYY-MM-DD) — filter by created_at <=.
+
+        Returns:
+            CSV string ready to stream.
+        """
+        query = (
+            self.supabase.table("ticket_records")
+            .select("*, ticket:tickets(merchant_name, ticket_details)")
+            .order("created_at", desc=True)
+        )
+
+        if from_date:
+            query = query.gte("created_at", f"{from_date}T00:00:00+00:00")
+        if to_date:
+            query = query.lte("created_at", f"{to_date}T23:59:59+00:00")
+
+        result = query.execute()
+        rows = result.data or []
+
+        # Flatten joined ticket data
+        for row in rows:
+            ticket_join = row.pop("ticket", None) or {}
+            if isinstance(ticket_join, list):
+                ticket_join = ticket_join[0] if ticket_join else {}
+            row["merchant_name"] = ticket_join.get("merchant_name", "")
+            row["ticket_type"] = ticket_join.get("ticket_details", "")
+
+        # Build CSV
+        columns = [
+            "order_id",
+            "booked_at",
+            "merchant_name",
+            "ticket_type",
+            "contact_name",
+            "contact_email",
+            "contact_phone",
+            "visit_date",
+            "visit_time",
+            "quantity",
+            "unit_price",
+            "total_price",
+            "stripe_payment_status",
+            "order_status",
+            "special_requests",
+            "e_ticket_url",
+            "fulfilled_at",
+            "internal_notes",
+        ]
+
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+
+        for row in rows:
+            writer.writerow(
+                {
+                    "order_id": row.get("id", ""),
+                    "booked_at": row.get("created_at", ""),
+                    "merchant_name": row.get("merchant_name", ""),
+                    "ticket_type": row.get("ticket_type", ""),
+                    "contact_name": row.get("contact_name", ""),
+                    "contact_email": row.get("contact_email", ""),
+                    "contact_phone": row.get("contact_phone", ""),
+                    "visit_date": row.get("visit_date", ""),
+                    "visit_time": row.get("visit_time", ""),
+                    "quantity": row.get("quantity", ""),
+                    "unit_price": row.get("unit_price", ""),
+                    "total_price": row.get("total_price", ""),
+                    "stripe_payment_status": row.get("stripe_payment_status", ""),
+                    "order_status": row.get("status", ""),
+                    "special_requests": row.get("special_requests", ""),
+                    "e_ticket_url": row.get("e_ticket_url", ""),
+                    "fulfilled_at": row.get("fulfilled_at", ""),
+                    "internal_notes": row.get("internal_notes", ""),
+                }
+            )
+
+        return output.getvalue()
+
+    # ================================
+    # PRIVATE HELPERS
+    # ================================
+
+    async def _get_active_ticket(self, ticket_id: UUID) -> dict:
+        """
+        Fetch an active ticket whose pricing period covers today.
+
+        Raises:
+            ValueError: If ticket not found, not active, or outside pricing period.
+        """
+        from datetime import date
+
+        result = (
+            self.supabase.table("tickets")
+            .select("*")
+            .eq("id", str(ticket_id))
+            .execute()
+        )
+
+        if not result.data:
+            raise ValueError("Ticket not found")
+
+        ticket = result.data[0]
+
+        if not ticket.get("is_active", False):
+            raise ValueError("Ticket is not currently active")
+
+        today = date.today()
+
+        def _parse_date(val):
+            if val is None:
+                return None
+            if isinstance(val, date):
+                return val
+            return date.fromisoformat(str(val)[:10])
+
+        period_start = _parse_date(ticket.get("pricing_period_start"))
+        period_end = _parse_date(ticket.get("pricing_period_end"))
+
+        if period_start and today < period_start:
+            raise ValueError("Ticket pricing period has not started yet")
+        if period_end and today > period_end:
+            raise ValueError("Ticket pricing period has ended")
+
+        return ticket
+
+    def _send_confirmation_email_to_user(
+        self, record: dict, merchant_name: str, ticket_details: str
+    ) -> None:
+        """Send booking confirmation email to the customer via Postmark."""
+        if not POSTMARK_API_KEY:
+            logger.error("Cannot send email: POSTMARK_API_KEY not configured")
+            raise Exception("Email service not configured: POSTMARK_API_KEY missing")
+
+        visit_date = record.get("visit_date") or "Open Dated"
+        visit_time = record.get("visit_time") or "Not specified"
+        quantity = record.get("quantity", 1)
+        total_price = record.get("total_price", 0)
+        contact_email = record.get("contact_email", "")
+        contact_name = record.get("contact_name", "")
+        order_id = record.get("id", "")
+
+        body = f"""Hi {contact_name},
+
+Your StudentVerse booking is confirmed! 🎉
+
+Here are your booking details:
+
+  Merchant:      {merchant_name}
+  Ticket Type:   {ticket_details}
+  Visit Date:    {visit_date}
+  Visit Time:    {visit_time}
+  Quantity:      {quantity}
+  Total Paid:    AED {total_price}
+  Order ID:      {order_id}
+
+Your e-ticket(s) will be delivered to this email within 24 hours.
+
+If you have any questions, please reply to this email.
+
+Thank you for choosing StudentVerse!
+
+---
+StudentVerse Team
+"""
+
+        client = PostmarkClient(server_token=POSTMARK_API_KEY)
+        result = client.emails.send(
+            From=FROM_ADDRESS,
+            To=contact_email,
+            Subject="Your StudentVerse booking is confirmed 🎉",
+            TextBody=body,
+        )
+
+        error_code = result.get("ErrorCode", -1) if isinstance(result, dict) else -1
+        if error_code != 0:
+            raise Exception(f"Postmark send failed (user email): {result}")
+
+        logger.info(
+            f"Confirmation email sent to {contact_email}. "
+            f"Postmark MessageID: {result.get('MessageID')}"
+        )
+
+    def _send_internal_booking_email(
+        self, record: dict, merchant_name: str, ticket_details: str
+    ) -> None:
+        """Send full order details to the internal team via Postmark."""
+        if not POSTMARK_API_KEY:
+            logger.error("Cannot send email: POSTMARK_API_KEY not configured")
+            raise Exception("Email service not configured: POSTMARK_API_KEY missing")
+
+        if not INTERNAL_BOOKINGS_EMAIL:
+            logger.warning("INTERNAL_BOOKINGS_EMAIL not configured — skipping internal email")
+            return
+
+        visit_date = record.get("visit_date") or "Open Dated"
+        visit_time = record.get("visit_time") or "Not specified"
+        special_requests = record.get("special_requests") or "None"
+
+        body = f"""New Ticket Order — {merchant_name}
+
+Order ID:           {record.get('id', '')}
+Merchant:           {merchant_name}
+Ticket Type:        {ticket_details}
+Customer Name:      {record.get('contact_name', '')}
+Customer Email:     {record.get('contact_email', '')}
+Customer Phone:     {record.get('contact_phone', '')}
+Visit Date:         {visit_date}
+Visit Time:         {visit_time}
+Quantity:           {record.get('quantity', '')}
+Unit Price:         AED {record.get('unit_price', '')}
+Total Paid:         AED {record.get('total_price', '')}
+Special Requests:   {special_requests}
+
+---
+StudentVerse Booking System
+"""
+
+        client = PostmarkClient(server_token=POSTMARK_API_KEY)
+        result = client.emails.send(
+            From=FROM_ADDRESS,
+            To=INTERNAL_BOOKINGS_EMAIL,
+            Subject=f"New Ticket Order — {merchant_name}",
+            TextBody=body,
+        )
+
+        error_code = result.get("ErrorCode", -1) if isinstance(result, dict) else -1
+        if error_code != 0:
+            raise Exception(f"Postmark send failed (internal email): {result}")
+
+        logger.info(
+            f"Internal booking email sent to {INTERNAL_BOOKINGS_EMAIL}. "
+            f"Postmark MessageID: {result.get('MessageID')}"
+        )
