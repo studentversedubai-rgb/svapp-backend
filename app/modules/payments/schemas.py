@@ -24,6 +24,7 @@ class CreateMockOrderRequest(BaseModel):
     visit_date: Optional[date] = Field(None, description="Desired visit date (optional)")
     visit_time: Optional[time] = Field(None, description="Desired visit time (optional)")
     contact_phone: str = Field(..., max_length=20, description="Contact phone number")
+    contact_email: str = Field(..., description="Personal email to send tickets to")
     special_requests: Optional[str] = Field(None, max_length=500, description="Any special requests (optional)")
 
     @field_validator("contact_phone")

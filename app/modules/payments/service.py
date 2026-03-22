@@ -92,7 +92,7 @@ class PaymentService:
             "ticket_id": str(payload.ticket_id),
             "user_id": user_id,
             "contact_name": user_name,
-            "contact_email": user_email,
+            "contact_email": payload.contact_email,
             "contact_phone": payload.contact_phone,
             "visit_date": payload.visit_date.isoformat() if payload.visit_date else None,
             "visit_time": str(payload.visit_time) if payload.visit_time else None,
