@@ -6,14 +6,16 @@ Pydantic models for authentication requests and responses.
 
 import re
 from typing import Optional, Any, Dict
-from pydantic import BaseModel, EmailStr, Field, field_validator, HttpUrl
+from pydantic import BaseModel, EmailStr, Field, field_validator, HttpUrl, ConfigDict
 
 class SendOTPRequest(BaseModel):
     """Request to send OTP"""
+    model_config = ConfigDict(extra='forbid')
     email: EmailStr = Field(..., description="University email address")
 
 class VerifyOTPRequest(BaseModel):
     """Request to verify OTP"""
+    model_config = ConfigDict(extra='forbid')
     email: EmailStr = Field(..., description="University email address")
     code: str = Field(..., min_length=6, max_length=6, description="6-digit OTP code")
 
@@ -26,6 +28,7 @@ class VerifyOTPRequest(BaseModel):
 
 class RegisterRequest(BaseModel):
     """Request to complete user registration/profile"""
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
     email: EmailStr = Field(..., description="University email address")
     name: str = Field(..., min_length=2, max_length=100, description="Full name")
     first_name: str = Field(..., min_length=2, max_length=50, description="First name")
@@ -39,6 +42,14 @@ class RegisterRequest(BaseModel):
     profile_picture_url: Optional[str] = Field(None, alias="avatar_url", description="Profile picture URL")
     device_id: Optional[str] = Field(None, min_length=5, max_length=255, description="Device ID for single device login")
     password: Optional[str] = Field(None, min_length=8, description="User chosen password to set in Supabase Auth")
+
+    @field_validator("name", "first_name", "last_name", "nationality", "university", "student_id", mode="before")
+    @classmethod
+    def strip_html_and_scripts(cls, v: Optional[str]) -> Optional[str]:
+        if v and isinstance(v, str):
+            if "<" in v or ">" in v or "script" in v.lower() or "javascript:" in v.lower():
+                raise ValueError("Input contains invalid or dangerous characters")
+        return v
 
     @field_validator("name", "first_name", "last_name")
     @classmethod
@@ -85,8 +96,8 @@ class RegisterRequest(BaseModel):
     def phone_must_be_valid(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        v = v.strip().replace(" ", "")  # Strip spaces (frontend may send "+971 505129707")
-        if not re.match(r"^\+[1-9]\d{6,14}$", v):
+        v = v.strip().replace(" ", "")  # Strip spaces
+        if not re.match(r"^\+?[1-9]\d{1,14}$", v):
             raise ValueError("Phone number must be in international format (e.g. +971501234567)")
         return v
 
@@ -100,25 +111,30 @@ class RegisterRequest(BaseModel):
             raise ValueError("Profile picture URL must start with http:// or https://")
         return v
 
-    class Config:
-        populate_by_name = True
-
 class ProfileUpdateRequest(BaseModel):
     """Request to update allowed profile fields"""
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    
     name: Optional[str] = Field(None, min_length=2, max_length=100, description="Full name")
     student_id: Optional[str] = Field(None, min_length=3, max_length=30, description="Student ID")
-    university: Optional[str] = Field(None, description="University name")
-    nationality: Optional[str] = Field(None, description="Nationality")
-    phone_number: Optional[str] = Field(None, description="Phone number")
+    university: Optional[str] = Field(None, max_length=150, description="University name")
+    nationality: Optional[str] = Field(None, max_length=60, description="Nationality")
+    phone_number: Optional[str] = Field(None, max_length=20, description="Phone number")
     profile_picture_url: Optional[str] = Field(None, alias="avatar_url", description="Profile picture URL")
-
-    class Config:
-        populate_by_name = True
+    
+    @field_validator("name", "nationality", "university", "student_id", mode="before")
+    @classmethod
+    def strip_html_and_scripts(cls, v: Optional[str]) -> Optional[str]:
+        if v and isinstance(v, str):
+            if "<" in v or ">" in v or "script" in v.lower() or "javascript:" in v.lower():
+                raise ValueError("Input contains invalid or dangerous characters")
+        return v
 
 class LoginRequest(BaseModel):
     """Request to login"""
+    model_config = ConfigDict(extra='forbid')
     email: EmailStr = Field(..., description="Email address")
-    password: str = Field(..., description="User password")
+    password: str = Field(..., min_length=8, max_length=100, description="User password")
 
 class UserData(BaseModel):
     """User data in response"""

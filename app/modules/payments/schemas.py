@@ -4,10 +4,11 @@ Payments Schemas
 Pydantic models for mock order creation and related responses.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional
 from datetime import date, time
 from uuid import UUID
+import re
 
 
 # ================================
@@ -16,12 +17,37 @@ from uuid import UUID
 
 class CreateMockOrderRequest(BaseModel):
     """Request body to create a mock ticket order (test flow — no real payment)"""
+    model_config = ConfigDict(extra='forbid')
+    
     ticket_id: UUID = Field(..., description="ID of the ticket to purchase")
-    quantity: int = Field(..., ge=1, description="Number of tickets (minimum 1)")
+    quantity: int = Field(..., ge=1, le=20, description="Number of tickets (minimum 1, max 20)")
     visit_date: Optional[date] = Field(None, description="Desired visit date (optional)")
     visit_time: Optional[time] = Field(None, description="Desired visit time (optional)")
-    contact_phone: str = Field(..., description="Contact phone number")
-    special_requests: Optional[str] = Field(None, description="Any special requests (optional)")
+    contact_phone: str = Field(..., max_length=20, description="Contact phone number")
+    special_requests: Optional[str] = Field(None, max_length=500, description="Any special requests (optional)")
+
+    @field_validator("contact_phone")
+    @classmethod
+    def phone_must_be_valid(cls, v: str) -> str:
+        v = v.strip().replace(" ", "")
+        if not re.match(r"^\+?[1-9]\d{1,14}$", v):
+            raise ValueError("Phone number must be in international format (e.g. +971501234567)")
+        return v
+
+    @field_validator("visit_date")
+    @classmethod
+    def date_must_not_be_past(cls, v: Optional[date]) -> Optional[date]:
+        if v and v < date.today():
+            raise ValueError("Visit date cannot be in the past")
+        return v
+
+    @field_validator("special_requests", mode="before")
+    @classmethod
+    def strip_html_and_scripts(cls, v: Optional[str]) -> Optional[str]:
+        if v and isinstance(v, str):
+            if "<" in v or ">" in v or "script" in v.lower() or "javascript:" in v.lower():
+                raise ValueError("Input contains invalid or dangerous characters")
+        return v
 
 
 # ================================

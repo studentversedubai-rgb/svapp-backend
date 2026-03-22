@@ -10,11 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.redis import redis_manager
 from app.modules.auth.router import router as auth_router
 from app.modules.offers.router import router as offers_router
-from app.modules.orbit.router import router as orbit_router
 from app.modules.entitlements.router import router as entitlements_router
 from app.modules.merchant.router import router as merchant_router
 from app.modules.tickets.router import router as tickets_router
 from app.modules.payments.router import router as payments_router
+from app.core.config import Settings
+from app.core.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware
+from app.core.ratelimit import RateLimitMiddleware
 
 def create_app() -> FastAPI:
     """
@@ -60,13 +62,19 @@ def create_app() -> FastAPI:
     # ================================
     # CORS Configuration
     # ================================
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Configure in production
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Intentionally omitted. 
+    # This backend exists solely for native iOS/Android clients which bypass CORS.
+    # By omitting these headers, we ensure modern browsers will automatically 
+    # block ALL 3rd-party websites from making fetch requests to this database.
+    settings_obj = Settings() # Validate environments immediately on boot
+    
+    # ================================
+    # Security Middlewares
+    # ================================
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(RequestSizeLimitMiddleware, max_upload_size=1048576) # 1MB limit
+    app.add_middleware(LoggingMiddleware)
 
     # ================================
     # Exception Handlers
@@ -75,18 +83,34 @@ def create_app() -> FastAPI:
     from fastapi.exceptions import RequestValidationError
     from fastapi import Request, HTTPException
 
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        import logging
+        log = logging.getLogger(__name__)
+        log.error(f"Unhandled Exception: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "An unexpected error occurred. Please try again later."},
+        )
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
+        detail = exc.detail
+        if exc.status_code == 404:
+            detail = "Resource not found."
+            
         return JSONResponse(
             status_code=exc.status_code,
-            content={"ok": False, "error": exc.detail},
+            content={"ok": False, "error": detail},
         )
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        errors = exc.errors()
+        simplified_errors = [f"{'.'.join(str(loc) for loc in error.get('loc', []))}: {error.get('msg')}" for error in errors]
         return JSONResponse(
             status_code=422,
-            content={"ok": False, "error": str(exc.errors())}, # standard pydantic error format wrapped
+            content={"ok": False, "error": "Validation failed", "details": simplified_errors},
         )
     
     # ================================

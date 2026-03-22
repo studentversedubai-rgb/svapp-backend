@@ -46,16 +46,6 @@ class Settings(BaseSettings):
     REDIS_DB: int = 0
     
     # ================================
-    # CORS
-    # ================================
-    ALLOWED_ORIGINS: str = "http://localhost:3000"
-    
-    @property
-    def allowed_origins_list(self) -> List[str]:
-        """Parse comma-separated origins into list"""
-        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
-    
-    # ================================
     # RATE LIMITING
     # ================================
     RATE_LIMIT_ENABLED: bool = True

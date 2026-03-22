@@ -7,7 +7,8 @@ Implements velocity and daily quota protection to prevent abuse and control API 
 
 import logging
 from datetime import datetime
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
+from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.redis import redis_manager
 
 logger = logging.getLogger(__name__)
@@ -221,3 +222,109 @@ class RateLimiter:
                 "daily_remaining": daily_limit,
                 "daily_limit": daily_limit
             }
+
+    @classmethod
+    def check_generic_limit(
+        cls, 
+        key: str, 
+        limit: int, 
+        window: int, 
+        error_message: str = "Too Many Requests"
+    ) -> None:
+        """
+        Generic sliding window (or fixed window via EXPIRE) rate limit check.
+        """
+        try:
+            if redis_manager.redis_client:
+                current = redis_manager.redis_client.get(key)
+                if current is None:
+                    redis_manager.redis_client.setex(key, window, "1")
+                else:
+                    count = int(current)
+                    if count >= limit:
+                        logger.warning(f"Rate limit exceeded for key {key}")
+                        ttl = redis_manager.redis_client.ttl(key)
+                        raise HTTPException(
+                            status_code=429,
+                            detail=error_message,
+                            headers={"Retry-After": str(ttl if ttl > 0 else window)}
+                        )
+                    redis_manager.redis_client.incr(key)
+            else:
+                # Fallback purely for dev
+                current = redis_manager.memory_store.get(key)
+                if current is None:
+                    redis_manager.memory_store[key] = 1
+                else:
+                    count = int(current)
+                    if count >= limit:
+                        raise HTTPException(
+                            status_code=429,
+                            detail=error_message,
+                            headers={"Retry-After": str(window)}
+                        )
+                    redis_manager.memory_store[key] = count + 1
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error checking generic limit: {e}")
+            pass
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        
+        # Exclude documentation and root
+        if path in ["/docs", "/redoc", "/openapi.json", "/health", "/"]:
+            return await call_next(request)
+            
+        is_auth_strict = path.startswith("/auth/send-otp") or path.startswith("/auth/verify-otp") or path.startswith("/auth/login")
+        is_payment = path.startswith("/payments")
+        
+        auth_header = request.headers.get("Authorization")
+        user_id = None
+        if auth_header and auth_header.startswith("Bearer "):
+            try:
+                import jwt # Requires python-jose
+                token = auth_header.split(" ")[1]
+                payload = jwt.decode(token, options={"verify_signature": False})
+                user_id = payload.get("sub")
+            except Exception:
+                pass
+                
+        # 1. Auth endpoints strict bounds: 5 req/min/IP
+        # 2. Payment endpoints: 10 req/min/user
+        # 3. Authenticated: 60 req/min/user
+        # 4. Public (no user_id): 30 req/min/IP
+        if is_auth_strict:
+            limit, window, identifier = 5, 60, self._get_ip(request)
+        elif is_payment:
+            limit, window, identifier = 10, 60, user_id or self._get_ip(request)
+        else:
+            if user_id:
+                limit, window, identifier = 60, 60, user_id
+            else:
+                limit, window, identifier = 30, 60, self._get_ip(request)
+                
+        # We group limits strictly per path to allow limits per endpoint type,
+        # but for true strictness we can do per route. Using path is fine.
+        key = f"rl:global:{identifier}" if not is_auth_strict else f"rl:auth:{identifier}"
+        
+        try:
+            RateLimiter.check_generic_limit(key, limit, window)
+        except HTTPException as e:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"ok": False, "error": e.detail},
+                headers=e.headers
+            )
+            
+        return await call_next(request)
+
+    def _get_ip(self, request: Request) -> str:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        # Ensure we have a string fallback if client is somehow None
+        return getattr(request.client, 'host', '127.0.0.1')

@@ -1,3 +1,7 @@
+# SECURITY TODO: Audit requirements.txt for CVEs
+# Packages like fastapi==0.109.0, pydantic==2.5.3, and others are strictly pinned to older versions.
+# These must be reviewed against known CVE databases and upgraded safely before final production launch.
+
 # Core
 fastapi==0.109.0
 uvicorn[standard]==0.27.0

@@ -4,7 +4,7 @@ Offers Schemas - Phase 2
 Pydantic models for offer requests and responses.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List
 from datetime import datetime, time
 
@@ -157,6 +157,7 @@ class OfferDetail(BaseModel):
 
 class HomeFeedRequest(BaseModel):
     """Request for home feed with optional location"""
+    model_config = ConfigDict(extra='forbid')
     latitude: Optional[float] = Field(None, ge=-90, le=90)
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     page: int = Field(1, ge=1)
@@ -172,6 +173,7 @@ class HomeFeedRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     """Search offers request"""
+    model_config = ConfigDict(extra='forbid')
     query: Optional[str] = Field(None, max_length=200)
     category_id: Optional[str] = None
     latitude: Optional[float] = Field(None, ge=-90, le=90)
@@ -180,14 +182,20 @@ class SearchRequest(BaseModel):
     page: int = Field(1, ge=1)
     page_size: int = Field(20, ge=1, le=100)
     
+    @field_validator('query', mode='before')
+    @classmethod
+    def strip_html_and_scripts(cls, v: Optional[str]) -> Optional[str]:
+        if v and isinstance(v, str):
+            if "<" in v or ">" in v or "script" in v.lower() or "javascript:" in v.lower():
+                raise ValueError("Input contains invalid or dangerous characters")
+        return v
+
     @field_validator('query')
     @classmethod
     def sanitize_query(cls, v):
         """Sanitize search query"""
         if v:
-            # Remove potentially harmful characters
             v = v.strip()
-            # Basic sanitization - remove SQL-like characters
             dangerous_chars = [';', '--', '/*', '*/', 'xp_', 'sp_', 'DROP', 'DELETE', 'INSERT', 'UPDATE']
             v_upper = v.upper()
             for char in dangerous_chars:
@@ -198,6 +206,7 @@ class SearchRequest(BaseModel):
 
 class NearbyOffersRequest(BaseModel):
     """Request for nearby offers"""
+    model_config = ConfigDict(extra='forbid')
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
     radius_km: float = Field(5.0, ge=0.1, le=50)  # Default 5km, max 50km
