@@ -121,10 +121,6 @@ class PaymentService:
         except Exception as e:
             logger.error(f"Failed to send user confirmation email: {e}", exc_info=True)
 
-        try:
-            self._send_internal_booking_email(record, merchant_name, ticket_details)
-        except Exception as e:
-            logger.error(f"Failed to send internal booking email: {e}", exc_info=True)
 
         return CreateMockOrderResponse(
             record_id=UUID(record["id"]),
@@ -331,54 +327,3 @@ StudentVerse Team
             f"Postmark MessageID: {result.get('MessageID')}"
         )
 
-    def _send_internal_booking_email(
-        self, record: dict, merchant_name: str, ticket_details: str
-    ) -> None:
-        """Send full order details to the internal team via Postmark."""
-        if not POSTMARK_API_KEY:
-            logger.error("Cannot send email: POSTMARK_API_KEY not configured")
-            raise Exception("Email service not configured: POSTMARK_API_KEY missing")
-
-        if not INTERNAL_BOOKINGS_EMAIL:
-            logger.warning("INTERNAL_BOOKINGS_EMAIL not configured — skipping internal email")
-            return
-
-        visit_date = record.get("visit_date") or "Open Dated"
-        visit_time = record.get("visit_time") or "Not specified"
-        special_requests = record.get("special_requests") or "None"
-
-        body = f"""New Ticket Order — {merchant_name}
-
-Order ID:           {record.get('id', '')}
-Merchant:           {merchant_name}
-Ticket Type:        {ticket_details}
-Customer Name:      {record.get('contact_name', '')}
-Customer Email:     {record.get('contact_email', '')}
-Customer Phone:     {record.get('contact_phone', '')}
-Visit Date:         {visit_date}
-Visit Time:         {visit_time}
-Quantity:           {record.get('quantity', '')}
-Unit Price:         AED {record.get('unit_price', '')}
-Total Paid:         AED {record.get('total_price', '')}
-Special Requests:   {special_requests}
-
----
-StudentVerse Booking System
-"""
-
-        client = PostmarkClient(server_token=POSTMARK_API_KEY)
-        result = client.emails.send(
-            From=FROM_ADDRESS,
-            To=INTERNAL_BOOKINGS_EMAIL,
-            Subject=f"New Ticket Order — {merchant_name}",
-            TextBody=body,
-        )
-
-        error_code = result.get("ErrorCode", -1) if isinstance(result, dict) else -1
-        if error_code != 0:
-            raise Exception(f"Postmark send failed (internal email): {result}")
-
-        logger.info(
-            f"Internal booking email sent to {INTERNAL_BOOKINGS_EMAIL}. "
-            f"Postmark MessageID: {result.get('MessageID')}"
-        )
