@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.redis import redis_manager
 from app.modules.auth.router import router as auth_router
 from app.modules.offers.router import router as offers_router
+from app.modules.orbit.router import router as orbit_router
 from app.modules.entitlements.router import router as entitlements_router
 from app.modules.merchant.router import router as merchant_router
 from app.modules.tickets.router import router as tickets_router
