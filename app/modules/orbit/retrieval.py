@@ -9,6 +9,7 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 from app.core.database import get_supabase_client
+from app.modules.tickets.service import TicketService
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,32 @@ class OfferRetrieval:
                 if score > 0:  # Only include if at least one keyword matches
                     offer['_relevance_score'] = score
                     scored_offers.append(offer)
+            
+            # Fetch tickets if keywords suggest tourist attractions or events
+            ticket_keywords = {'tourist', 'attraction', 'attractions', 'ticket', 'tickets', 'show', 'event', 'events', 'activities', 'park', 'museum', 'aquarium', 'tour'}
+            if any(kw in keywords for kw in ticket_keywords):
+                try:
+                    ticket_service = TicketService()
+                    # We pass merchant_name=None to get all active tickets
+                    tickets_resp = await ticket_service.get_active_tickets()
+                    for ticket in tickets_resp.items:
+                        ticket_dict = {
+                            'id': str(ticket.id),
+                            'title': ticket.merchant_name,
+                            'description': str(ticket.ticket_details) if ticket.ticket_details else 'Student Ticket',
+                            'merchant': {'name': ticket.merchant_name, 'address': ticket.location, 'latitude': ticket.latitude, 'longitude': ticket.longitude},
+                            'category': {'name': 'Attractions & Events'},
+                            'original_price': ticket.market_price_adult,
+                            'discounted_price': ticket.our_price,
+                            'is_active': ticket.is_active,
+                            '_relevance_score': 100.0  # Base high score to ensure it surfaces for these queries
+                        }
+                        # Add any additional score if it matches specific keywords
+                        score = self._calculate_relevance_score(ticket_dict, keywords)
+                        ticket_dict['_relevance_score'] += score 
+                        scored_offers.append(ticket_dict)
+                except Exception as e:
+                    logger.error(f"Failed to retrieve tickets: {e}")
             
             # Fallback: if keyword matching returned nothing, return all active offers
             # This ensures plan/find mode always has content to work with

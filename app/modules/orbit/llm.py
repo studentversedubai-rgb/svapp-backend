@@ -343,7 +343,7 @@ or
             
         except Exception as e:
             logger.error(f"Conversation generation failed: {e}", exc_info=True)
-            return "Hey! 😊 I'm here to help you find awesome student deals. What are you looking for today?"
+            raise
     
     async def generate_response_with_history(
         self,
