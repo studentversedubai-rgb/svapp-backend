@@ -26,6 +26,13 @@ class VerifyOTPRequest(BaseModel):
             raise ValueError("OTP code must contain only digits")
         return v
 
+class ResetPasswordRequest(BaseModel):
+    """Request to reset password after OTP verification"""
+    model_config = ConfigDict(extra='forbid')
+    email: EmailStr = Field(..., description="University email address")
+    reset_token: str = Field(..., description="Reset token obtained from verifying forgot-password OTP")
+    new_password: str = Field(..., min_length=8, max_length=100, description="New password")
+
 class RegisterRequest(BaseModel):
     """Request to complete user registration/profile"""
     model_config = ConfigDict(extra='forbid', populate_by_name=True)

@@ -12,6 +12,7 @@ from app.modules.auth.schemas import (
     RegisterRequest,
     ProfileUpdateRequest,
     LoginRequest,
+    ResetPasswordRequest,
     AuthResponse,
     ProfileResponse,
     AnalyticsResponse,
@@ -49,6 +50,33 @@ async def verify_otp(request_body: VerifyOTPRequest, request: Request):
     device_id = request.headers.get("X-Device-ID", "")
     result = await auth_service.verify_otp(request_body.email, request_body.code, device_id)
     return AuthResponse(data=result)
+
+
+@router.post("/forgot-password/send-otp")
+async def forgot_password_send_otp(request: SendOTPRequest):
+    """
+    Send OTP for forgot password flow
+    """
+    result = await auth_service.forgot_password_send_otp(request.email)
+    return {"ok": True, "data": result}
+
+
+@router.post("/forgot-password/verify-otp")
+async def forgot_password_verify_otp(request: VerifyOTPRequest):
+    """
+    Verify OTP for forgot password flow and get a temporary reset token
+    """
+    result = await auth_service.forgot_password_verify_otp(request.email, request.code)
+    return {"ok": True, "data": result}
+
+
+@router.post("/forgot-password/reset")
+async def forgot_password_reset(request: ResetPasswordRequest):
+    """
+    Reset password using the temporary reset token
+    """
+    result = await auth_service.forgot_password_reset(request.email, request.reset_token, request.new_password)
+    return {"ok": True, "data": result}
 
 
 @router.post("/register")

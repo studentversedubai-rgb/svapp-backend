@@ -13,6 +13,7 @@ next authenticated request because the stored device_id no longer matches.
 import random
 import string
 import logging
+import uuid
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, status
 from app.core.database import get_supabase_client, create_fresh_supabase_client
@@ -162,6 +163,71 @@ class AuthService:
             "is_new_user": True,
             "user": {"id": user_id, "email": email}
         }
+
+    # ------------------------------------------------------------------
+    # Forgot Password Flow
+    # ------------------------------------------------------------------
+
+    async def forgot_password_send_otp(self, email: str) -> Dict[str, str]:
+        """Send OTP for forgot password. Verifies the user exists first."""
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
+
+        existing = supabase.table("users").select("id").eq("email", email).execute()
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No account found with this email."
+            )
+
+        # Uses the exact same send_otp logic to generate and send
+        return await self.send_otp(email)
+
+    async def forgot_password_verify_otp(self, email: str, code: str) -> Dict[str, Any]:
+        """Verify OTP for forgot password and issue a temporary reset token."""
+        redis_key = f"sv:app:auth:otp:{email}"
+        stored_code = redis_manager.get(redis_key)
+        
+        if not stored_code:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
+        if stored_code != code:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
+
+        # Create a unique 10-minute reset token
+        reset_token = str(uuid.uuid4())
+        redis_manager.setex(f"sv:app:auth:reset_token:{email}", 600, reset_token)
+        redis_manager.delete(redis_key)
+
+        return {"reset_token": reset_token}
+
+    async def forgot_password_reset(self, email: str, reset_token: str, new_password: str) -> Dict[str, Any]:
+        """Use the temporary reset token to set a new password via Supabase Auth Admin API."""
+        token_key = f"sv:app:auth:reset_token:{email}"
+        stored_token = redis_manager.get(token_key)
+        
+        if not stored_token or stored_token != reset_token:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+            
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
+            
+        user_check = supabase.table("users").select("id").eq("email", email).execute()
+        if not user_check.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            
+        user_id = str(user_check.data[0]["id"])
+        
+        try:
+            supabase.auth.admin.update_user_by_id(user_id, {"password": new_password})
+            logger.info(f"Password reset successfully for user: {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to reset password for user {user_id}: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to reset password")
+            
+        redis_manager.delete(token_key)
+        return {"message": "Password reset successfully"}
 
     # ------------------------------------------------------------------
     # Registration (profile completion after OTP)
