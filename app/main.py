@@ -63,10 +63,21 @@ def create_app() -> FastAPI:
     # ================================
     # CORS Configuration
     # ================================
-    # Intentionally omitted. 
-    # This backend exists solely for native iOS/Android clients which bypass CORS.
-    # By omitting these headers, we ensure modern browsers will automatically 
-    # block ALL 3rd-party websites from making fetch requests to this database.
+    # Native iOS/Android clients bypass CORS, so no wildcard is needed.
+    # We only allow the merchant dashboard (a browser app) and local dev.
+    # All other web origins are blocked by the browser automatically.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "https://svmerchant.vercel.app",   # production merchant dashboard
+            "http://localhost:5173",            # local Vite dev server
+            "http://localhost:4173",            # local Vite preview server
+        ],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+    )
+
     settings_obj = Settings() # Validate environments immediately on boot
     
     # ================================
