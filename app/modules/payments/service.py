@@ -286,7 +286,178 @@ class PaymentService:
         contact_name = record.get("contact_name", "")
         order_id = record.get("id", "")
 
-        body = f"""Hi {contact_name},
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Booking Confirmed</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #0a1128;
+            color: #ffffff;
+            line-height: 1.6;
+            padding: 20px;
+        }}
+        .container {{
+            max-width: 500px;
+            margin: 0 auto;
+            background-color: #1a1a2e;
+            border-radius: 16px;
+            overflow: hidden;
+        }}
+        .header {{
+            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+            padding: 30px 20px;
+            text-align: center;
+        }}
+        .header h1 {{
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }}
+        .header .subtitle {{
+            font-size: 14px;
+            opacity: 0.9;
+        }}
+        .content {{
+            padding: 25px 20px;
+        }}
+        .greeting {{
+            margin-bottom: 20px;
+        }}
+        .greeting p {{
+            font-size: 16px;
+            color: #e2e8f0;
+        }}
+        .details-card {{
+            background-color: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 20px 0;
+        }}
+        .details-card h2 {{
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #94a3b8;
+            margin-bottom: 15px;
+        }}
+        .detail-row {{
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #1e3a5f;
+        }}
+        .detail-row:last-child {{
+            border-bottom: none;
+        }}
+        .detail-label {{
+            color: #94a3b8;
+            font-size: 14px;
+        }}
+        .detail-value {{
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 600;
+            text-align: right;
+        }}
+        .total-row {{
+            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+            margin: 15px -20px -25px;
+            padding: 20px;
+            text-align: center;
+        }}
+        .total-row .detail-label {{
+            color: rgba(255,255,255,0.8);
+            font-size: 14px;
+        }}
+        .total-row .detail-value {{
+            color: #ffffff;
+            font-size: 28px;
+            font-weight: 700;
+        }}
+        .footer {{
+            background-color: #0f172a;
+            padding: 20px;
+            text-align: center;
+        }}
+        .footer p {{
+            color: #64748b;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }}
+        .footer .brand {{
+            color: #4F46E5;
+            font-weight: 600;
+            font-size: 14px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎉 Booking Confirmed!</h1>
+            <p class="subtitle">Your order has been successfully placed</p>
+        </div>
+        
+        <div class="content">
+            <div class="greeting">
+                <p>Hi {contact_name},</p>
+                <p>Great news! Your StudentVerse booking is confirmed. Here are your booking details:</p>
+            </div>
+            
+            <div class="details-card">
+                <h2>Booking Details</h2>
+                <div class="detail-row">
+                    <span class="detail-label">Merchant</span>
+                    <span class="detail-value">{merchant_name}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Ticket Type</span>
+                    <span class="detail-value">{ticket_details}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Visit Date</span>
+                    <span class="detail-value">{visit_date}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Visit Time</span>
+                    <span class="detail-value">{visit_time}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Quantity</span>
+                    <span class="detail-value">{quantity}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Order ID</span>
+                    <span class="detail-value" style="font-size: 12px; word-break: break-all;">{order_id}</span>
+                </div>
+            </div>
+            
+            <div class="total-row">
+                <div class="detail-label">Total Paid</div>
+                <div class="detail-value">AED {total_price}</div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>Your e-ticket(s) will be delivered to this email within 24 hours.</p>
+            <p>If you have any questions, reply to this email.</p>
+            <br>
+            <p class="brand">StudentVerse Team</p>
+        </div>
+    </div>
+</body>
+</html>"""
+
+        plain_text = f"""Hi {contact_name},
 
 Your StudentVerse booking is confirmed! 🎉
 
@@ -307,15 +478,15 @@ If you have any questions, please reply to this email.
 Thank you for choosing StudentVerse!
 
 ---
-StudentVerse Team
-"""
+StudentVerse Team"""
 
         client = PostmarkClient(server_token=POSTMARK_API_KEY)
         result = client.emails.send(
             From=FROM_ADDRESS,
             To=contact_email,
             Subject="Your StudentVerse booking is confirmed 🎉",
-            TextBody=body,
+            HtmlBody=html_content,
+            TextBody=plain_text,
         )
 
         error_code = result.get("ErrorCode", -1) if isinstance(result, dict) else -1
