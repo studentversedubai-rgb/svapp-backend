@@ -299,68 +299,81 @@ class PaymentService:
             box-sizing: border-box;
         }}
         body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #0a1128;
+            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #000000;
             color: #ffffff;
             line-height: 1.6;
             padding: 20px;
         }}
         .container {{
-            max-width: 500px;
+            max-width: 480px;
             margin: 0 auto;
-            background-color: #1a1a2e;
-            border-radius: 16px;
+            background-color: rgba(18, 18, 18, 0.6);
+            border-radius: 20px;
             overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.1);
         }}
         .header {{
-            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
-            padding: 30px 20px;
+            background: linear-gradient(90deg, #FF6B35 0%, #F72585 50%, #7209B7 100%);
+            padding: 32px 24px;
             text-align: center;
         }}
         .header h1 {{
-            font-size: 24px;
-            font-weight: 700;
+            font-size: 28px;
+            font-weight: 800;
             margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
         }}
         .header .subtitle {{
             font-size: 14px;
             opacity: 0.9;
+            font-weight: 500;
         }}
         .content {{
-            padding: 25px 20px;
+            padding: 28px 24px;
         }}
         .greeting {{
-            margin-bottom: 20px;
+            margin-bottom: 24px;
         }}
         .greeting p {{
             font-size: 16px;
-            color: #e2e8f0;
+            color: #ffffff;
+            margin-bottom: 8px;
+        }}
+        .greeting p:first-child {{
+            font-size: 20px;
+            font-weight: 700;
+            color: #9C27B0;
         }}
         .details-card {{
-            background-color: #16213e;
-            border-radius: 12px;
-            padding: 20px;
-            margin: 20px 0;
+            background-color: #121212;
+            border-radius: 16px;
+            padding: 24px;
+            margin: 24px 0;
+            border: 1px solid rgba(255, 255, 255, 0.1);
         }}
         .details-card h2 {{
             font-size: 14px;
             text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #94a3b8;
-            margin-bottom: 15px;
+            letter-spacing: 1.5px;
+            color: #9C27B0;
+            margin-bottom: 20px;
+            font-weight: 700;
         }}
         .detail-row {{
             display: flex;
             justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid #1e3a5f;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         }}
         .detail-row:last-child {{
             border-bottom: none;
         }}
         .detail-label {{
-            color: #94a3b8;
+            color: #888888;
             font-size: 14px;
+            font-weight: 500;
         }}
         .detail-value {{
             color: #ffffff;
@@ -369,48 +382,68 @@ class PaymentService:
             text-align: right;
         }}
         .total-row {{
-            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
-            margin: 15px -20px -25px;
-            padding: 20px;
+            background: linear-gradient(90deg, #FF6B35 0%, #F72585 50%, #7209B7 100%);
+            margin: 24px -24px -28px;
+            padding: 24px;
             text-align: center;
         }}
         .total-row .detail-label {{
             color: rgba(255,255,255,0.8);
             font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
         }}
         .total-row .detail-value {{
             color: #ffffff;
-            font-size: 28px;
-            font-weight: 700;
+            font-size: 32px;
+            font-weight: 800;
+            margin-top: 8px;
         }}
         .footer {{
-            background-color: #0f172a;
-            padding: 20px;
+            background-color: #000000;
+            padding: 24px;
             text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
         }}
         .footer p {{
-            color: #64748b;
-            font-size: 12px;
-            margin-bottom: 5px;
+            color: #888888;
+            font-size: 13px;
+            margin-bottom: 6px;
+            line-height: 1.5;
         }}
         .footer .brand {{
-            color: #4F46E5;
-            font-weight: 600;
-            font-size: 14px;
+            background: linear-gradient(90deg, #FF6B35 0%, #F72585 50%, #7209B7 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-weight: 700;
+            font-size: 16px;
+            margin-top: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+        @media (max-width: 480px) {{
+            body {{
+                padding: 12px;
+            }}
+            .container {{
+                border-radius: 16px;
+            }}
         }}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎉 Booking Confirmed!</h1>
+            <h1>Booking Confirmed!</h1>
             <p class="subtitle">Your order has been successfully placed</p>
         </div>
         
         <div class="content">
             <div class="greeting">
                 <p>Hi {contact_name},</p>
-                <p>Great news! Your StudentVerse booking is confirmed. Here are your booking details:</p>
+                <p>Your StudentVerse booking is confirmed. Check out your booking details below:</p>
             </div>
             
             <div class="details-card">
@@ -437,7 +470,7 @@ class PaymentService:
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">Order ID</span>
-                    <span class="detail-value" style="font-size: 12px; word-break: break-all;">{order_id}</span>
+                    <span class="detail-value" style="font-size: 11px; word-break: break-all;">{order_id}</span>
                 </div>
             </div>
             
@@ -450,8 +483,7 @@ class PaymentService:
         <div class="footer">
             <p>Your e-ticket(s) will be delivered to this email within 24 hours.</p>
             <p>If you have any questions, reply to this email.</p>
-            <br>
-            <p class="brand">StudentVerse Team</p>
+            <p class="brand">StudentVerse</p>
         </div>
     </div>
 </body>
