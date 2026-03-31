@@ -410,7 +410,7 @@ StudentVerse Team
         
         stripe.PaymentIntent.modify(
             payment_intent.id,
-            metadata={**payment_intent.metadata, "record_id": str(record["id"])}
+            metadata={**payment_intent.metadata.to_dict(), "record_id": str(record["id"])}
         )
         
         from app.modules.payments.schemas import CreatePaymentIntentResponse
@@ -455,7 +455,7 @@ StudentVerse Team
         if payment_intent.status != "succeeded":
             raise HTTPException(400, "Payment has not succeeded")
             
-        if payment_intent.metadata.get("record_id") != str(payload.record_id):
+        if payment_intent.metadata.to_dict().get("record_id") != str(payload.record_id):
             raise HTTPException(400, "PaymentIntent does not match this booking")
             
         self.supabase.table("ticket_records").update({"payment_status": "confirmed"}).eq("id", str(payload.record_id)).execute()
