@@ -8,7 +8,7 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from fastapi.responses import Response
 
 from app.core.security import get_current_user
@@ -16,12 +16,16 @@ from app.modules.payments.service import PaymentService
 from app.modules.payments.schemas import (
     CreateMockOrderRequest,
     CreateMockOrderResponse,
+    CreatePaymentIntentRequest,
+    CreatePaymentIntentResponse,
+    ConfirmPaymentRequest,
+    ConfirmPaymentResponse,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
+webhook_router = APIRouter()
 
 # ================================
 # DEPENDENCY INJECTION
@@ -106,6 +110,78 @@ async def create_mock_order(
         )
 
 
+@router.post(
+    "/tickets/create-payment-intent",
+    response_model=CreatePaymentIntentResponse,
+    summary="Create a Stripe Payment Intent",
+)
+async def create_payment_intent(
+    payload: CreatePaymentIntentRequest,
+    current_user: dict = Depends(get_current_user),
+    payment_service: PaymentService = Depends(get_payment_service),
+):
+    user_id = current_user["id"]
+    user_name = (
+        current_user.get("name")
+        or " ".join(
+            filter(None, [current_user.get("first_name"), current_user.get("last_name")])
+        )
+        or "Student"
+    )
+    user_email = current_user.get("email", "")
+    
+    try:
+        return await payment_service.create_payment_intent(
+            user_id=user_id,
+            user_name=user_name,
+            user_email=user_email,
+            payload=payload,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating payment intent: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create payment intent",
+        )
+
+@router.post(
+    "/tickets/confirm-payment",
+    response_model=ConfirmPaymentResponse,
+    summary="Confirm a Stripe Payment",
+)
+async def confirm_payment(
+    payload: ConfirmPaymentRequest,
+    current_user: dict = Depends(get_current_user),
+    payment_service: PaymentService = Depends(get_payment_service),
+):
+    user_id = current_user["id"]
+    
+    try:
+        return await payment_service.confirm_payment(
+            user_id=user_id,
+            payload=payload,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error confirming payment: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to confirm payment",
+        )
+
 # ================================
 # GET /payments/tickets/records/export  — Admin only
 # ================================
@@ -156,4 +232,30 @@ async def export_ticket_records(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to export ticket records",
+        )
+
+# ================================
+# POST /stripe/webhook
+# ================================
+
+@webhook_router.post("/webhook", summary="Stripe Webhook Handler")
+async def stripe_webhook(
+    request: Request,
+    payment_service: PaymentService = Depends(get_payment_service),
+):
+    """
+    Handle Stripe webhooks, such as payment_intent.succeeded
+    """
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    try:
+        return await payment_service.handle_webhook(payload, sig_header)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error handling webhook: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook handler failed",
         )

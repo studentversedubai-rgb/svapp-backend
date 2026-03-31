@@ -327,3 +327,203 @@ StudentVerse Team
             f"Postmark MessageID: {result.get('MessageID')}"
         )
 
+
+    # ================================
+    # STRIPE INTEGRATION
+    # ================================
+
+    async def create_payment_intent(
+        self,
+        user_id: str,
+        user_name: str,
+        user_email: str,
+        payload: "CreatePaymentIntentRequest",
+    ) -> "CreatePaymentIntentResponse":
+        import stripe
+        from app.core.config import Settings
+        from fastapi import HTTPException
+        
+        settings = Settings()
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        
+        if not stripe.api_key:
+            raise HTTPException(500, "Stripe is not configured")
+        
+        ticket = await self._get_active_ticket(payload.ticket_id)
+        amount_in_fils = int(float(ticket["our_price"]) * payload.quantity * 100)
+        
+        # Get or create customer
+        user_result = self.supabase.table("users").select("stripe_customer_id").eq("id", user_id).execute()
+        if not user_result.data:
+            raise ValueError("User not found")
+            
+        stripe_customer_id = user_result.data[0].get("stripe_customer_id")
+        
+        if stripe_customer_id:
+            try:
+                customer = stripe.Customer.retrieve(stripe_customer_id)
+            except Exception:
+                customer = stripe.Customer.create(email=user_email, metadata={"user_id": str(user_id)})
+                self.supabase.table("users").update({"stripe_customer_id": customer.id}).eq("id", user_id).execute()
+        else:
+            customer = stripe.Customer.create(email=user_email, metadata={"user_id": str(user_id)})
+            self.supabase.table("users").update({"stripe_customer_id": customer.id}).eq("id", user_id).execute()
+            
+        ephemeral_key = stripe.EphemeralKey.create(
+            customer=customer.id,
+            stripe_version="2024-06-20"
+        )
+        
+        visit_date_str = payload.visit_date.isoformat() if payload.visit_date else ""
+        
+        payment_intent = stripe.PaymentIntent.create(
+            amount=amount_in_fils,
+            currency="aed",
+            customer=customer.id,
+            metadata={
+                "ticket_id": str(payload.ticket_id),
+                "quantity": str(payload.quantity),
+                "visit_date": visit_date_str,
+                "user_id": str(user_id),
+            }
+        )
+        
+        record_data = {
+            "ticket_id": str(payload.ticket_id),
+            "user_id": user_id,
+            "contact_name": user_name,
+            "contact_email": payload.contact_email,
+            "contact_phone": payload.contact_phone,
+            "visit_date": visit_date_str or None,
+            "visit_time": str(payload.visit_time) if payload.visit_time else None,
+            "quantity": payload.quantity,
+            "special_requests": payload.special_requests,
+            "unit_price": float(ticket["our_price"]),
+            "total_price": float(ticket["our_price"]) * payload.quantity,
+            "stripe_customer_id": customer.id,
+            "stripe_payment_intent_id": payment_intent.id,
+            "payment_status": "pending",
+        }
+        
+        insert_result = self.supabase.table("ticket_records").insert(record_data).execute()
+        record = insert_result.data[0]
+        
+        stripe.PaymentIntent.modify(
+            payment_intent.id,
+            metadata={**payment_intent.metadata, "record_id": str(record["id"])}
+        )
+        
+        from app.modules.payments.schemas import CreatePaymentIntentResponse
+        return CreatePaymentIntentResponse(
+            payment_intent_client_secret=payment_intent.client_secret,
+            ephemeral_key_secret=ephemeral_key.secret,
+            customer_id=customer.id,
+            record_id=UUID(record["id"]),
+            total_price=float(ticket["our_price"]) * payload.quantity,
+            currency="aed"
+        )
+
+    async def confirm_payment(
+        self,
+        user_id: str,
+        payload: "ConfirmPaymentRequest",
+    ) -> "ConfirmPaymentResponse":
+        import stripe
+        from app.core.config import Settings
+        from fastapi import HTTPException
+        
+        settings = Settings()
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        
+        record_result = self.supabase.table("ticket_records").select("*, ticket:tickets(merchant_name, ticket_details)").eq("id", str(payload.record_id)).execute()
+        if not record_result.data:
+            raise HTTPException(404, "Record not found")
+            
+        record = record_result.data[0]
+        if record["user_id"] != user_id:
+            raise HTTPException(400, "Record does not belong to user")
+            
+        if record.get("payment_status") == "confirmed":
+            from app.modules.payments.schemas import ConfirmPaymentResponse
+            return ConfirmPaymentResponse(
+                record_id=payload.record_id,
+                status="confirmed",
+                message="Booking confirmed successfully"
+            )
+            
+        payment_intent = stripe.PaymentIntent.retrieve(payload.payment_intent_id)
+        if payment_intent.status != "succeeded":
+            raise HTTPException(400, "Payment has not succeeded")
+            
+        if payment_intent.metadata.get("record_id") != str(payload.record_id):
+            raise HTTPException(400, "PaymentIntent does not match this booking")
+            
+        self.supabase.table("ticket_records").update({"payment_status": "confirmed"}).eq("id", str(payload.record_id)).execute()
+        
+        ticket_join = record.get("ticket", {})
+        if isinstance(ticket_join, list):
+            ticket_join = ticket_join[0] if ticket_join else {}
+        merchant_name = ticket_join.get("merchant_name", "Unknown Merchant")
+        ticket_details = ticket_join.get("ticket_details", "")
+        
+        try:
+            self._send_confirmation_email_to_user(record, merchant_name, ticket_details)
+        except Exception as e:
+            logger.error(f"Email failed: {e}")
+            
+        from app.modules.payments.schemas import ConfirmPaymentResponse
+        return ConfirmPaymentResponse(
+            record_id=payload.record_id,
+            status="confirmed",
+            message="Booking confirmed successfully"
+        )
+
+    async def handle_webhook(self, payload: bytes, sig_header: str):
+        import stripe
+        from app.core.config import Settings
+        from fastapi import HTTPException
+        
+        settings = Settings()
+        
+        try:
+            event = stripe.Webhook.construct_event(
+                payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
+            )
+        except stripe.error.SignatureVerificationError:
+            raise HTTPException(400, "Invalid signature")
+            
+        if event["type"] == "payment_intent.succeeded":
+            payment_intent = event["data"]["object"]
+            record_id = payment_intent.get("metadata", {}).get("record_id")
+            
+            if record_id:
+                record_result = self.supabase.table("ticket_records").select("*, ticket:tickets(merchant_name, ticket_details)").eq("id", record_id).execute()
+                if record_result.data:
+                    record = record_result.data[0]
+                    if record.get("payment_status") != "confirmed":
+                        self.supabase.table("ticket_records").update({"payment_status": "confirmed"}).eq("id", record_id).execute()
+                        
+                        ticket_join = record.get("ticket", {})
+                        if isinstance(ticket_join, list):
+                            ticket_join = ticket_join[0] if ticket_join else {}
+                        merchant_name = ticket_join.get("merchant_name", "Unknown Merchant")
+                        ticket_details = ticket_join.get("ticket_details", "")
+                        
+                        try:
+                            self._send_confirmation_email_to_user(record, merchant_name, ticket_details)
+                        except Exception as e:
+                            logger.error(f"Email failed: {e}")
+                            
+  
+        elif event["type"] == "payment_intent.payment_failed":
+            payment_intent = event["data"]["object"]
+            record_id = payment_intent.get("metadata", {}).get("record_id")
+            
+            if record_id:
+                record_result = self.supabase.table("ticket_records").select("*").eq("id", record_id).execute()
+                if record_result.data:
+                    record = record_result.data[0]
+                    if record.get("payment_status") == "pending":
+                        self.supabase.table("ticket_records").update({"payment_status": "failed"}).eq("id", record_id).execute()
+                        
+        return {"status": "ok"}

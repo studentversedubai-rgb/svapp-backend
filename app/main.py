@@ -143,6 +143,9 @@ def create_app() -> FastAPI:
     app.include_router(tickets_router, prefix="/tickets", tags=["Tickets"])
     app.include_router(payments_router, prefix="/payments", tags=["Payments"])
     
+    from app.modules.payments.router import webhook_router
+    app.include_router(webhook_router, prefix="/stripe", tags=["Stripe Webhook"])
+    
     return app
 
 

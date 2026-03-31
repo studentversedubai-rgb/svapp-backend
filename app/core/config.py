@@ -87,10 +87,10 @@ class Settings(BaseSettings):
     VELOCITY_WINDOW: int = 60  # Velocity window in seconds
     
     # ================================
-    # SV PAY (Placeholder)
+    # SV PAY
     # ================================
-    # STRIPE_SECRET_KEY: str = ""
-    # STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
     
     class Config:
         env_file = ".env"

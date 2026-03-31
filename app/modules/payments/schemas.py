@@ -62,3 +62,27 @@ class CreateMockOrderResponse(BaseModel):
     total_price: float = Field(..., description="Total price in AED")
     status: str = Field(..., description="Payment status — always 'paid' in mock flow")
     message: str = Field(..., description="Informational message about the mock flow")
+
+class CreatePaymentIntentRequest(CreateMockOrderRequest):
+    """Request body to create a Stripe Payment Intent"""
+    pass
+
+class CreatePaymentIntentResponse(BaseModel):
+    """Response after creating a Stripe Payment Intent"""
+    payment_intent_client_secret: str = Field(..., description="Stripe client secret")
+    ephemeral_key_secret: str = Field(..., description="Stripe ephemeral key secret")
+    customer_id: str = Field(..., description="Stripe customer ID")
+    record_id: UUID = Field(..., description="Created ticket_records row ID")
+    total_price: float = Field(..., description="Total price in AED")
+    currency: str = Field(..., description="Currency, e.g. 'aed'")
+
+class ConfirmPaymentRequest(BaseModel):
+    """Request body to confirm a payment"""
+    record_id: UUID = Field(..., description="ID of the booking record")
+    payment_intent_id: str = Field(..., description="Stripe PaymentIntent ID")
+
+class ConfirmPaymentResponse(BaseModel):
+    """Response after confirming a payment"""
+    record_id: UUID = Field(..., description="ID of the booking record")
+    status: str = Field(..., description="Status, e.g., 'confirmed'")
+    message: str = Field(..., description="Message")
