@@ -347,18 +347,23 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
  * Health check handler
  */
 export function healthHandler(req: Request, res: Response): void {
-  const circuitBreaker = getCircuitBreaker();
-  
-  if (!config.features.svOrbitEnabled) {
-    res.status(503).json({ status: 'unavailable', service: 'orbit', message: 'Orbit is currently disabled' });
-    return;
-  }
+  try {
+    const circuitBreaker = getCircuitBreaker();
+    
+    if (!config.features.svOrbitEnabled) {
+      res.status(503).json({ status: 'unavailable', service: 'orbit', message: 'Orbit is currently disabled' });
+      return;
+    }
 
-  if (circuitBreaker.isOpen()) {
-    const remaining = circuitBreaker.getRemainingSeconds();
-    res.status(503).json({ status: 'unavailable', service: 'orbit', message: `Circuit breaker open. Retry in ${remaining}s.` });
-    return;
-  }
+    if (circuitBreaker.isOpen()) {
+      const remaining = circuitBreaker.getRemainingSeconds();
+      res.status(503).json({ status: 'unavailable', service: 'orbit', message: `Circuit breaker open. Retry in ${remaining}s.` });
+      return;
+    }
 
-  res.json({ status: 'ok', service: 'orbit' });
+    res.json({ status: 'ok', service: 'orbit' });
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(500).json({ status: 'error', service: 'orbit', message: 'Health check failed' });
+  }
 }

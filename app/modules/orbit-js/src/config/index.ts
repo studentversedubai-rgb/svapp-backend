@@ -56,8 +56,23 @@ const envSchema = z.object({
   CONVERSATION_MAX_MESSAGES: z.string().default('20'),
 });
 
-// Parse and validate environment
-const env = envSchema.parse(process.env);
+// Parse and validate environment with better error messages
+let env: z.infer<typeof envSchema>;
+try {
+  env = envSchema.parse(process.env);
+} catch (error) {
+  console.error('Configuration Error: Missing required environment variables');
+  if (error instanceof z.ZodError) {
+    error.errors.forEach((err) => {
+      console.error(`  - ${err.path.join('.')}: ${err.message}`);
+    });
+  } else {
+    console.error(error);
+  }
+  // Set a flag so the app can still start but will be disabled
+  env = envSchema.parse({ ...process.env, FEATURE_SV_ORBIT_ENABLED: 'false' });
+  console.log('Starting with features disabled due to missing configuration');
+}
 
 // Configuration object
 export const config = {

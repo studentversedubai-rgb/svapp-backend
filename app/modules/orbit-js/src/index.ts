@@ -66,8 +66,9 @@ app.use((req, res) => {
 
 // Start server
 const PORT = config.port;
+const HOST = '0.0.0.0';
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
@@ -75,7 +76,7 @@ app.listen(PORT, () => {
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
 
-🚀 Server running on port ${PORT}
+🚀 Server running on http://${HOST}:${PORT}
 📁 Environment: ${config.nodeEnv}
 🤖 AI Model: ${config.openrouter.model}
 🔧 Features:
@@ -88,6 +89,11 @@ Endpoints:
    GET  /orbit/health    - Health check (same as above)
    POST /orbit/chat      - Chat with Orbit AI (requires Bearer token)
   `);
+});
+
+server.on('error', (error: any) => {
+  console.error('Server failed to start:', error.message);
+  process.exit(1);
 });
 
 // Graceful shutdown
