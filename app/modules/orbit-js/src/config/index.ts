@@ -56,6 +56,15 @@ const envSchema = z.object({
   CONVERSATION_MAX_MESSAGES: z.string().default('20'),
 });
 
+// Fallback schema — same structure but every field is optional with safe defaults
+const fallbackSchema = envSchema.extend({
+  OPENROUTER_API_KEY: z.string().default(''),
+  SUPABASE_URL: z.string().default(''),
+  SUPABASE_SERVICE_KEY: z.string().default(''),
+  REDIS_URL: z.string().default(''),
+  JWT_SECRET: z.string().default(''),
+});
+
 // Parse and validate environment with better error messages
 let env: z.infer<typeof envSchema>;
 try {
@@ -69,8 +78,8 @@ try {
   } else {
     console.error(error);
   }
-  // Set a flag so the app can still start but will be disabled
-  env = envSchema.parse({ ...process.env, FEATURE_SV_ORBIT_ENABLED: 'false' });
+  // Use fallback schema so the app can still start with features disabled
+  env = fallbackSchema.parse({ ...process.env, FEATURE_SV_ORBIT_ENABLED: 'false' });
   console.log('Starting with features disabled due to missing configuration');
 }
 
