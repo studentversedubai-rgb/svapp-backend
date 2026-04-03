@@ -34,8 +34,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint (no auth required)
-app.get('/health', healthHandler);
+// Root health check — always returns 200, no dependencies
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'orbit', timestamp: new Date().toISOString() });
+});
+
+// Detailed health check with service status
 app.get('/orbit/health', healthHandler);
 
 // Orbit chat endpoint (requires auth)

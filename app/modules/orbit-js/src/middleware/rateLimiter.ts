@@ -20,15 +20,13 @@ export class RateLimiter {
   private enabled: boolean;
 
   constructor(redis?: Redis) {
-    this.redis = redis || new Redis({
-      host: config.redis.url,
-      port: 6379,
-      password: config.redis.password || undefined,
-      db: config.redis.db,
+    this.redis = redis || new Redis(config.redis.url, {
       retryStrategy: (times) => {
         const delay = Math.min(times * 50, 2000);
         return delay;
       },
+      maxRetriesPerRequest: 3,
+      lazyConnect: true,
     });
 
     this.dailyLimit = config.orbit.dailyChatLimit;
