@@ -1,8 +1,25 @@
 /**
  * SV Orbit JavaScript Service
- * 
+ *
  * Entry point for the Orbit AI service using Vercel AI SDK.
  */
+
+// Catch any crash during startup so Railway logs show what happened
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION — app crashed:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason);
+});
+
+console.log('[STARTUP] Loading modules...');
+console.log('[STARTUP] PORT env =', process.env.PORT);
+console.log('[STARTUP] NODE_ENV =', process.env.NODE_ENV);
+console.log('[STARTUP] REDIS_URL set =', !!process.env.REDIS_URL);
+console.log('[STARTUP] SUPABASE_URL set =', !!process.env.SUPABASE_URL);
+console.log('[STARTUP] OPENROUTER_API_KEY set =', !!process.env.OPENROUTER_API_KEY);
+console.log('[STARTUP] JWT_SECRET set =', !!process.env.JWT_SECRET);
 
 import express from 'express';
 import cors from 'cors';
