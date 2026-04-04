@@ -7,7 +7,7 @@ Does NOT require student JWT authentication.
 
 import json
 import logging
-import hashlib
+import bcrypt
 from typing import Optional, Dict
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -378,16 +378,13 @@ class MerchantService:
             if not merchant:
                 return False
             
-            # Hash the provided PIN
-            pin_hash = hashlib.sha256(pin.encode()).hexdigest()
-            
-            # Compare with stored hash
+            # Hash the provided PIN and compare using bcrypt (salted, constant-time)
             stored_hash = merchant.get('pin_hash')
             if not stored_hash:
                 logger.error(f"Merchant {merchant_id} has no PIN configured — access denied")
                 return False
-            
-            return pin_hash == stored_hash
+
+            return bcrypt.checkpw(pin.encode('utf-8'), stored_hash.encode('utf-8'))
         except Exception as e:
             logger.error(f"Error verifying merchant PIN: {e}")
             return False
