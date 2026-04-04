@@ -384,9 +384,8 @@ class MerchantService:
             # Compare with stored hash
             stored_hash = merchant.get('pin_hash')
             if not stored_hash:
-                # Fallback: if no PIN hash stored, allow any PIN (for testing)
-                logger.warning(f"No PIN hash for merchant {merchant_id}")
-                return True
+                logger.error(f"Merchant {merchant_id} has no PIN configured — access denied")
+                return False
             
             return pin_hash == stored_hash
         except Exception as e:
