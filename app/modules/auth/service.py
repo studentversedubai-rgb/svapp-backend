@@ -110,7 +110,8 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
         # Temporary password — will be replaced by chosen password in complete_registration
-        temp_password = f"SV_TEMP_{email}_OTP_VERIFIED!"
+        # Uses a cryptographically random token so it cannot be guessed from the email address
+        temp_password = secrets.token_urlsafe(32)
         try:
             auth_response = auth_client.auth.sign_up({"email": email, "password": temp_password})
         except Exception as e:
