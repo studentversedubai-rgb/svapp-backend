@@ -84,8 +84,11 @@ class MerchantService:
                     reason=f"Entitlement is {entitlement['state']}"
                 )
             
-            # Check expiry
+            # Check expiry carefully to avoid timezone naive vs aware TypeError
             expires_at = datetime.fromisoformat(entitlement['expires_at'].replace('Z', '+00:00'))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+                
             if datetime.now(timezone.utc) > expires_at:
                 return MerchantValidateResponse(
                     success=False,
@@ -404,9 +407,16 @@ class MerchantService:
             (discount_amount, final_amount)
         """
         if offer_type == 'percentage':
-            # Extract percentage value
-            percentage = Decimal(discount_value.replace('%', ''))
-            discount_amount = (total_bill * percentage) / Decimal('100')
+            # Extract percentage value safely
+            if not discount_value:
+                discount_amount = Decimal('0')
+            else:
+                try:
+                    percentage = Decimal(str(discount_value).replace('%', ''))
+                    discount_amount = (total_bill * percentage) / Decimal('100')
+                except Exception:
+                    discount_amount = Decimal('0')
+                    
             final_amount = total_bill - discount_amount
             
         elif offer_type == 'bogo':
