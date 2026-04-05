@@ -75,7 +75,11 @@ def create_app() -> FastAPI:
         ],
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",         # JWT bearer tokens
+            "X-Merchant-Api-Key",    # merchant dashboard API key
+        ],
     )
 
     settings_obj = Settings() # Validate environments immediately on boot
@@ -118,7 +122,10 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        import logging
+        log = logging.getLogger(__name__)
         errors = exc.errors()
+        log.warning(f"Validation error on {request.method} {request.url.path}: {errors}")
         simplified_errors = [f"{'.'.join(str(loc) for loc in error.get('loc', []))}: {error.get('msg')}" for error in errors]
         return JSONResponse(
             status_code=422,
