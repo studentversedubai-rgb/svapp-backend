@@ -80,22 +80,17 @@ class EntitlementService:
         Raises:
             ValueError: If validation fails
         """
-        # Validate offer eligibility first so we can check limits dynamically
+        # Check daily usage limit
+        if not await self._check_daily_limit(user_id, offer_id):
+            raise ValueError("Daily claim limit reached for this offer")
+        
+        # Validate offer eligibility
         offer = await self._get_offer(offer_id)
         if not offer:
             raise ValueError("Offer not found")
-
+        
         if not offer.get('is_active'):
             raise ValueError("Offer is not active")
-
-        # Determine limits dynamically
-        max_claims = offer.get('max_claims_per_user')
-        if max_claims is None:
-            max_claims = MAX_DAILY_CLAIMS_PER_OFFER
-
-        # Check daily usage limit
-        if not await self._check_daily_limit(user_id, offer_id, max_claims):
-            raise ValueError("Daily claim limit reached for this offer")
         
         # Check offer validity
         from datetime import timezone
@@ -635,12 +630,11 @@ class EntitlementService:
     # HELPER METHODS
     # ================================
     
-    async def _check_daily_limit(self, user_id: str, offer_id: str, max_claims: int) -> bool:
+    async def _check_daily_limit(self, user_id: str, offer_id: str) -> bool:
         """Check if user has reached daily claim limit for offer"""
         # Check in Redis first (fast)
         redis_key = f"{REDIS_PREFIX_DAILY_CLAIM}{user_id}:{offer_id}:{datetime.now().date()}"
-        redis_val = self.redis.get(redis_key)
-        if redis_val and int(redis_val) >= max_claims:
+        if self.redis.get(redis_key):
             return False
         
         # Check in database (fallback)
@@ -655,22 +649,17 @@ class EntitlementService:
             'claimed_at', today_end.isoformat()
         ).neq('state', EntitlementState.VOIDED.value).execute()
         
-        return len(result.data) < max_claims
+        return len(result.data) < MAX_DAILY_CLAIMS_PER_OFFER
     
     async def _mark_daily_claim(self, user_id: str, offer_id: str):
         """Mark claim in Redis for daily limit tracking"""
         redis_key = f"{REDIS_PREFIX_DAILY_CLAIM}{user_id}:{offer_id}:{datetime.now().date()}"
-        
-        current = self.redis.get(redis_key)
-        if current:
-            self.redis.incr(redis_key)
-        else:
-            # Expire at end of day
-            seconds_until_midnight = int((
-                datetime.combine(datetime.now().date() + timedelta(days=1), dt_time(0, 0, 0)) -
-                datetime.now()
-            ).total_seconds())
-            self.redis.setex(redis_key, seconds_until_midnight, "1")
+        # Expire at end of day
+        seconds_until_midnight = (
+            datetime.combine(datetime.now().date() + timedelta(days=1), dt_time(0, 0, 0)) -
+            datetime.now()
+        ).total_seconds()
+        self.redis.setex(redis_key, int(seconds_until_midnight), "1")
     
     async def _calculate_savings(
         self,

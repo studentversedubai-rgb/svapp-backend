@@ -1,13 +1,11 @@
 """
 Merchant Validation Router
 
-Endpoints for merchant-side QR validation and redemption.
-Requires X-Merchant-Api-Key header on all mutation endpoints.
+Public endpoints for merchant-side QR validation and redemption.
 Does NOT require student JWT authentication.
 """
 
-import os
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import JSONResponse
 import logging
 
@@ -26,9 +24,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-
-
-
 # ================================
 # VALIDATE QR TOKEN
 # ================================
@@ -38,7 +33,7 @@ async def validate_qr_token(request: MerchantValidateRequest):
     """
     Validate student's QR proof token
     
-    
+    **Public endpoint** - No authentication required
     
     Returns PASS/FAIL with offer details on success.
     
@@ -70,7 +65,7 @@ async def confirm_redemption(request: MerchantConfirmRequest):
     """
     Confirm redemption with merchant PIN and bill amount
     
-    
+    **Public endpoint** - No authentication required
     **Requires merchant PIN** for authorization
     
     Calculates discount based on offer type and creates redemption record.
@@ -114,7 +109,7 @@ async def void_redemption(request: MerchantVoidRequest):
     """
     Void a redemption within the void window
     
-    
+    **Public endpoint** - No authentication required
     **Requires merchant PIN** for authorization
     
     Voids redemption and restores entitlement if within window.
