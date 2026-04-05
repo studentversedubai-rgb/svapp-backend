@@ -26,26 +26,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def verify_merchant_api_key(x_merchant_api_key: str = Header(...)):
-    """Dependency that validates the X-Merchant-Api-Key header against MERCHANT_API_KEY env var."""
-    expected = os.environ.get("MERCHANT_API_KEY", "")
-    if not expected or x_merchant_api_key != expected:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing merchant API key"
-        )
+
 
 
 # ================================
 # VALIDATE QR TOKEN
 # ================================
 
-@router.post("/validate", response_model=MerchantValidateResponse, dependencies=[Depends(verify_merchant_api_key)])
+@router.post("/validate", response_model=MerchantValidateResponse)
 async def validate_qr_token(request: MerchantValidateRequest):
     """
     Validate student's QR proof token
     
-    **Requires X-Merchant-Api-Key header**
+    
     
     Returns PASS/FAIL with offer details on success.
     
@@ -72,12 +65,12 @@ async def validate_qr_token(request: MerchantValidateRequest):
 # CONFIRM REDEMPTION
 # ================================
 
-@router.post("/confirm", response_model=MerchantConfirmResponse, dependencies=[Depends(verify_merchant_api_key)])
+@router.post("/confirm", response_model=MerchantConfirmResponse)
 async def confirm_redemption(request: MerchantConfirmRequest):
     """
     Confirm redemption with merchant PIN and bill amount
     
-    **Requires X-Merchant-Api-Key header**
+    
     **Requires merchant PIN** for authorization
     
     Calculates discount based on offer type and creates redemption record.
@@ -116,12 +109,12 @@ async def confirm_redemption(request: MerchantConfirmRequest):
 # VOID REDEMPTION
 # ================================
 
-@router.post("/void", response_model=MerchantVoidResponse, dependencies=[Depends(verify_merchant_api_key)])
+@router.post("/void", response_model=MerchantVoidResponse)
 async def void_redemption(request: MerchantVoidRequest):
     """
     Void a redemption within the void window
     
-    **Requires X-Merchant-Api-Key header**
+    
     **Requires merchant PIN** for authorization
     
     Voids redemption and restores entitlement if within window.

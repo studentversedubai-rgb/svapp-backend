@@ -68,13 +68,12 @@ def create_app() -> FastAPI:
     # All other web origins are blocked by the browser automatically.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"], # Allow all origins since we use API Keys to secure the endpoints, fixing Vercel custom domain CORS blocking
+        allow_origins=["https://svmerchant.vercel.app"],
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=[
             "Content-Type",
             "Authorization",         # JWT bearer tokens
-            "X-Merchant-Api-Key",    # merchant dashboard API key
         ],
     )
 
