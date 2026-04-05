@@ -7,11 +7,15 @@ Does NOT require student JWT authentication.
 
 import json
 import logging
-import hashlib
+import os
 from typing import Optional, Dict
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from uuid import UUID
+
+os.environ.setdefault("PASSLIB_BUILTIN_BCRYPT", "enabled")
+
+from passlib.hash import bcrypt as bcrypt_hasher
 
 from app.core.database import get_supabase_client
 from app.core.redis import redis_manager
@@ -370,25 +374,19 @@ class MerchantService:
         """
         Verify merchant PIN
         
-        NOTE: This assumes merchants table has a 'pin_hash' column.
-        If not present, this will need to be added to the database.
+        Merchant PINs are stored as bcrypt hashes in merchants.pin_hash.
         """
         try:
             merchant = await self._get_merchant(merchant_id)
             if not merchant:
                 return False
             
-            # Hash the provided PIN
-            pin_hash = hashlib.sha256(pin.encode()).hexdigest()
-            
-            # Compare with stored hash
             stored_hash = merchant.get('pin_hash')
             if not stored_hash:
-                # Fallback: if no PIN hash stored, allow any PIN (for testing)
                 logger.warning(f"No PIN hash for merchant {merchant_id}")
-                return True
-            
-            return pin_hash == stored_hash
+                return False
+
+            return bcrypt_hasher.verify(pin, stored_hash)
         except Exception as e:
             logger.error(f"Error verifying merchant PIN: {e}")
             return False
