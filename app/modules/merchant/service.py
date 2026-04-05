@@ -296,6 +296,9 @@ class MerchantService:
         
         # Check void window (2 hours)
         redeemed_at = datetime.fromisoformat(redemption['redeemed_at'].replace('Z', '+00:00'))
+        if redeemed_at.tzinfo is None:
+            redeemed_at = redeemed_at.replace(tzinfo=timezone.utc)
+            
         now = datetime.now(timezone.utc)
         time_since_redemption = now - redeemed_at
         
