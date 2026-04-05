@@ -8,6 +8,9 @@ Does NOT require student JWT authentication.
 import json
 import logging
 import os
+import re
+import hashlib
+import hmac
 from typing import Optional, Dict
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -386,6 +389,15 @@ class MerchantService:
                 logger.warning(f"No PIN hash for merchant {merchant_id}")
                 return False
 
+            # Support both bcrypt and SHA256 hashes to match existing data.
+            if stored_hash.startswith('$2a$') or stored_hash.startswith('$2b$') or stored_hash.startswith('$2y$'):
+                return bcrypt_hasher.verify(pin, stored_hash)
+
+            if re.fullmatch(r"[0-9a-fA-F]{64}", stored_hash):
+                pin_hash = hashlib.sha256(pin.encode('utf-8')).hexdigest()
+                return hmac.compare_digest(pin_hash, stored_hash.lower())
+
+            # Fallback: try bcrypt verification for any other format.
             return bcrypt_hasher.verify(pin, stored_hash)
         except Exception as e:
             logger.error(f"Error verifying merchant PIN: {e}")
@@ -406,8 +418,12 @@ class MerchantService:
             (discount_amount, final_amount)
         """
         if offer_type == 'percentage':
-            # Extract percentage value
-            percentage = Decimal(discount_value.replace('%', ''))
+            # Extract numeric percentage from discount_value like "20%" or "20% off".
+            raw_value = '' if discount_value is None else str(discount_value)
+            match = re.search(r"\d+(?:\.\d+)?", raw_value)
+            if not match:
+                raise ValueError("Invalid percentage discount value")
+            percentage = Decimal(match.group(0))
             discount_amount = (total_bill * percentage) / Decimal('100')
             final_amount = total_bill - discount_amount
             
