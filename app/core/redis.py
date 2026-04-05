@@ -72,6 +72,15 @@ class RedisManager:
             del self.memory_store[key]
             return True
         return False
+        
+    def incr(self, key: str) -> int:
+        """Increment value in Redis or Memory"""
+        if self.redis_client:
+            return self.redis_client.incr(key)
+            
+        current = int(self.memory_store.get(key, 0))
+        self.memory_store[key] = str(current + 1)
+        return current + 1
 
 # Global Redis manager instance
 redis_manager = RedisManager()
