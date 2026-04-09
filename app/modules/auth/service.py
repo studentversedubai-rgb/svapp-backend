@@ -463,6 +463,125 @@ class AuthService:
                 # Non-fatal — device_id clearing already handles security
                 logger.error(f"Failed to invalidate Supabase JWT: {e}")
 
+    # ------------------------------------------------------------------
+    # Account Deletion (permanent)
+    # ------------------------------------------------------------------
+
+    async def delete_account(self, user_id: str, access_token: str = None) -> None:
+        """
+        Permanently delete a user account and all associated data.
+
+        Deletion order (most-dependent first to avoid FK violations):
+        1. redemptions       (references user_id, no CASCADE)
+        2. entitlements       (references user_id)
+        3. ticket_records     (references user_id, no FK constraint)
+        4. public.users       (fetch stripe_customer_id + email first)
+        5. Stripe customer    (best-effort, non-fatal)
+        6. Redis keys         (OTP, reset tokens, Orbit conversations)
+        7. Supabase Auth JWT  (invalidate current session)
+        8. Supabase Auth user (auth.users row — final step)
+        """
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
+        # ── Fetch user info before deletion (need email + stripe ID) ──
+        email = None
+        stripe_customer_id = None
+        try:
+            user_result = supabase.table("users").select("email, stripe_customer_id").eq("id", user_id).execute()
+            if user_result.data:
+                email = user_result.data[0].get("email")
+                stripe_customer_id = user_result.data[0].get("stripe_customer_id")
+        except Exception as e:
+            logger.error(f"Failed to fetch user before deletion: {e}")
+            # Continue — we can still delete by user_id
+
+        # ── 1. Delete redemptions ──
+        try:
+            supabase.table("redemptions").delete().eq("user_id", user_id).execute()
+            logger.info(f"Deleted redemptions for user: {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete redemptions for user {user_id}: {e}")
+
+        # ── 2. Delete entitlements ──
+        try:
+            supabase.table("entitlements").delete().eq("user_id", user_id).execute()
+            logger.info(f"Deleted entitlements for user: {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete entitlements for user {user_id}: {e}")
+
+        # ── 3. Delete ticket_records ──
+        try:
+            supabase.table("ticket_records").delete().eq("user_id", user_id).execute()
+            logger.info(f"Deleted ticket_records for user: {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete ticket_records for user {user_id}: {e}")
+
+        # ── 4. Delete public.users row ──
+        try:
+            supabase.table("users").delete().eq("id", user_id).execute()
+            logger.info(f"Deleted public.users row for user: {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete public.users row for user {user_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to delete account. Please try again."
+            )
+
+        # ── 5. Delete Stripe customer (best-effort) ──
+        if stripe_customer_id:
+            try:
+                import stripe
+                stripe.Customer.delete(stripe_customer_id)
+                logger.info(f"Deleted Stripe customer {stripe_customer_id} for user: {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to delete Stripe customer {stripe_customer_id}: {e}")
+
+        # ── 6. Clean up Redis keys ──
+        if email:
+            try:
+                redis_manager.delete(f"sv:app:auth:otp:{email}")
+                redis_manager.delete(f"sv:app:auth:reset_token:{email}")
+            except Exception as e:
+                logger.error(f"Failed to clean up Redis auth keys for {email}: {e}")
+
+        # Clean up Orbit conversation and daily claim keys via pattern scan
+        try:
+            rc = redis_manager.redis_client
+            if rc:
+                # Orbit conversations
+                for key in rc.scan_iter(match=f"orbit:conversation:{user_id}:*", count=100):
+                    rc.delete(key)
+                # Daily claim tracking
+                for key in rc.scan_iter(match=f"sv:app:claim:daily:{user_id}:*", count=100):
+                    rc.delete(key)
+                logger.info(f"Cleaned up Redis ephemeral keys for user: {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to clean up Redis ephemeral keys for user {user_id}: {e}")
+
+        # ── 7. Invalidate current JWT ──
+        if access_token:
+            try:
+                supabase.auth.admin.sign_out(access_token)
+                logger.info(f"Invalidated JWT for deleted user: {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to invalidate JWT for deleted user {user_id}: {e}")
+
+        # ── 8. Delete Supabase Auth user (final step) ──
+        try:
+            supabase.auth.admin.delete_user(user_id)
+            logger.info(f"Deleted Supabase Auth user: {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete Supabase Auth user {user_id}: {e}")
+            # This is serious but the public.users row is already gone,
+            # so the account is effectively unusable. Log for manual cleanup.
+
+        logger.info(f"Account permanently deleted: {user_id} ({email})")
+
 
 # Singleton instance
 auth_service = AuthService()

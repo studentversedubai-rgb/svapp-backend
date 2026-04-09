@@ -174,3 +174,19 @@ async def logout(
     """
     await auth_service.logout_user(current_user["id"], access_token=credentials.credentials)
     return {"message": "Logged out successfully"}
+
+
+@router.delete("/account")
+async def delete_account(
+    current_user: Dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+):
+    """
+    Permanently delete the authenticated user's account and all associated data.
+
+    This is an irreversible operation required for App Store compliance.
+    Deletes: user profile, redemptions, entitlements, ticket records,
+    Stripe customer, Redis keys, and Supabase Auth user.
+    """
+    await auth_service.delete_account(current_user["id"], access_token=credentials.credentials)
+    return {"ok": True, "data": {"message": "Account permanently deleted"}}
