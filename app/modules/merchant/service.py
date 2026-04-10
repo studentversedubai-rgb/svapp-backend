@@ -133,8 +133,10 @@ class MerchantService:
             # Extend the Redis token TTL to give the merchant time to enter
             # their PIN and bill amount (default QR TTL is only 30 seconds).
             # 300 seconds = 5 minutes is sufficient for the merchant flow.
+            # RedisManager only exposes setex/get/delete, so we re-store
+            # the same token data with the new TTL instead of calling expire.
             MERCHANT_SESSION_TTL = 300
-            self.redis.expire(redis_key, MERCHANT_SESSION_TTL)
+            self.redis.setex(redis_key, MERCHANT_SESSION_TTL, token_data_str)
 
             # Mark entitlement as PENDING_CONFIRMATION so concurrent scans are rejected
             self.supabase.table('entitlements').update({
