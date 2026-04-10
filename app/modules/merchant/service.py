@@ -83,12 +83,25 @@ class MerchantService:
                     reason="Entitlement not found"
                 )
             
-            # Check entitlement state
-            if entitlement['state'] != EntitlementState.ACTIVE.value:
+            # Check entitlement state — accept ACTIVE or PENDING_CONFIRMATION
+            # (PENDING_CONFIRMATION means it was validated but not yet confirmed)
+            if entitlement['state'] not in [
+                EntitlementState.ACTIVE.value,
+                EntitlementState.PENDING_CONFIRMATION.value
+            ]:
+                state_val = entitlement['state']
+                if state_val == EntitlementState.USED.value:
+                    reason = "This offer has already been redeemed"
+                elif state_val == EntitlementState.EXPIRED.value:
+                    reason = "Entitlement has expired"
+                elif state_val == EntitlementState.VOIDED.value:
+                    reason = "Entitlement has been voided"
+                else:
+                    reason = f"Entitlement is {state_val}"
                 return MerchantValidateResponse(
                     success=False,
                     status="FAIL",
-                    reason=f"Entitlement is {entitlement['state']}"
+                    reason=reason
                 )
             
             # Check expiry
@@ -116,6 +129,23 @@ class MerchantService:
             # Get user details
             user = await self._get_user(entitlement['user_id'])
             student_name = user.get('full_name', 'Student') if user else "Student"
+
+            # Extend the Redis token TTL to give the merchant time to enter
+            # their PIN and bill amount (default QR TTL is only 30 seconds).
+            # 300 seconds = 5 minutes is sufficient for the merchant flow.
+            MERCHANT_SESSION_TTL = 300
+            self.redis.expire(redis_key, MERCHANT_SESSION_TTL)
+
+            # Mark entitlement as PENDING_CONFIRMATION so concurrent scans are rejected
+            self.supabase.table('entitlements').update({
+                'state': EntitlementState.PENDING_CONFIRMATION.value,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }).eq('id', str(entitlement_id)).execute()
+
+            logger.info(
+                f"QR token validated for entitlement {entitlement_id}; "
+                f"TTL extended to {MERCHANT_SESSION_TTL}s"
+            )
             
             # Return PASS with details
             return MerchantValidateResponse(
@@ -133,6 +163,8 @@ class MerchantService:
             
         except Exception as e:
             logger.error(f"Error validating proof token: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return MerchantValidateResponse(
                 success=False,
                 status="FAIL",
@@ -422,26 +454,41 @@ class MerchantService:
             raw_value = '' if discount_value is None else str(discount_value)
             match = re.search(r"\d+(?:\.\d+)?", raw_value)
             if not match:
-                raise ValueError("Invalid percentage discount value")
+                logger.error(
+                    f"Cannot extract percentage from discount_value={discount_value!r}. "
+                    "Applying zero discount as safe fallback."
+                )
+                # Return zero discount rather than crashing the entire redemption
+                return Decimal('0'), total_bill
             percentage = Decimal(match.group(0))
             discount_amount = (total_bill * percentage) / Decimal('100')
             final_amount = total_bill - discount_amount
             
         elif offer_type == 'bogo':
             # Buy 1 Get 1: discount is the item price
-            discount_amount = original_price or Decimal('0')
+            discount_amount = Decimal(str(original_price)) if original_price else Decimal('0')
             final_amount = total_bill - discount_amount
             
         elif offer_type == 'bundle':
             # Fixed price bundle
-            discount_amount = original_price - discounted_price if original_price and discounted_price else Decimal('0')
-            final_amount = discounted_price or total_bill
+            if original_price and discounted_price:
+                discount_amount = Decimal(str(original_price)) - Decimal(str(discounted_price))
+                final_amount = Decimal(str(discounted_price))
+            else:
+                discount_amount = Decimal('0')
+                final_amount = total_bill
             
         else:
             # Unknown type: no discount
             discount_amount = Decimal('0')
             final_amount = total_bill
         
+        # Guard: ensure amounts are never negative
+        if discount_amount < Decimal('0'):
+            discount_amount = Decimal('0')
+        if final_amount < Decimal('0'):
+            final_amount = Decimal('0')
+
         return discount_amount, final_amount
     
     async def _log_analytics_event(self, event_type: str, event_data: Dict):

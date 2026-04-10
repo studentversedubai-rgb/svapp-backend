@@ -93,10 +93,11 @@ async def confirm_redemption(request: MerchantConfirmRequest):
             detail=str(e)
         )
     except Exception as e:
-        logger.error(f"Error in confirm endpoint: {e}")
+        import traceback
+        logger.error(f"Error in confirm endpoint: {e}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to confirm redemption"
+            detail="Failed to confirm redemption. Please try again."
         )
 
 
