@@ -13,6 +13,8 @@ from app.modules.merchant.service import merchant_service
 from app.modules.merchant.schemas import (
     MerchantValidateRequest,
     MerchantValidateResponse,
+    MerchantVerifyPinRequest,
+    MerchantVerifyPinResponse,
     MerchantConfirmRequest,
     MerchantConfirmResponse,
     MerchantVoidRequest,
@@ -53,6 +55,40 @@ async def validate_qr_token(request: MerchantValidateRequest):
             success=False,
             status="FAIL",
             reason="Validation error"
+        )
+
+
+# ================================
+# VERIFY PIN
+# ================================
+
+@router.post("/verify-pin", response_model=MerchantVerifyPinResponse)
+async def verify_merchant_pin(request: MerchantVerifyPinRequest):
+    """
+    Verify merchant PIN before going to confirm step
+    
+    Returns success if PIN is correct, otherwise raises 400.
+    """
+    try:
+        await merchant_service.verify_pin(
+            proof_token=request.proof_token,
+            merchant_pin=request.merchant_pin
+        )
+        return MerchantVerifyPinResponse(
+            success=True,
+            message="PIN verified successfully"
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        import traceback
+        logger.error(f"Error in verify-pin endpoint: {e}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to verify PIN. Please try again."
         )
 
 

@@ -34,6 +34,18 @@ class MerchantValidateResponse(BaseModel):
     discounted_price: Optional[Decimal] = None
 
 
+class MerchantVerifyPinRequest(BaseModel):
+    """Request to verify merchant PIN before confirming a redemption"""
+    proof_token: str = Field(..., description="QR proof token (used to look up the merchant)")
+    merchant_pin: str = Field(..., min_length=4, description="Merchant PIN to verify")
+
+
+class MerchantVerifyPinResponse(BaseModel):
+    """Response from PIN verification"""
+    success: bool
+    message: str
+
+
 class MerchantConfirmRequest(BaseModel):
     """Request to confirm redemption with bill amount"""
     proof_token: str = Field(..., description="QR proof token")

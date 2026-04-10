@@ -174,6 +174,50 @@ class MerchantService:
             )
     
     # ================================
+    # VERIFY MERCHANT PIN (pre-check)
+    # ================================
+
+    async def verify_pin(self, proof_token: str, merchant_pin: str) -> bool:
+        """
+        Verify the merchant PIN without confirming the redemption.
+
+        Called from the PIN step so the user gets instant feedback
+        before entering the bill amount.  The token must still be in
+        Redis (it was extended to 300 s on validate).
+
+        Returns:
+            True on success
+
+        Raises:
+            ValueError: with a user-friendly message on failure
+        """
+        redis_key = f"{REDIS_PREFIX_QR_TOKEN}{proof_token}"
+        token_data_str = self.redis.get(redis_key)
+
+        if not token_data_str:
+            raise ValueError("QR code has expired. Please scan again.")
+
+        token_data = json.loads(token_data_str)
+        entitlement_id = token_data['entitlement_id']
+
+        entitlement = await self._get_entitlement(entitlement_id)
+        if not entitlement:
+            raise ValueError("Entitlement not found. Please scan again.")
+
+        offer = await self._get_offer(entitlement['offer_id'])
+        if not offer:
+            raise ValueError("Offer not found. Please scan again.")
+
+        merchant = await self._get_merchant(offer['merchant_id'])
+        if not merchant:
+            raise ValueError("Merchant not found. Please contact support.")
+
+        if not await self._verify_merchant_pin(merchant['id'], merchant_pin):
+            raise ValueError("Invalid merchant PIN")
+
+        return True
+
+    # ================================
     # CONFIRM REDEMPTION
     # ================================
     
