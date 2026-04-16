@@ -65,9 +65,6 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate verification code")
 
         # Send email
-        print(f"OTP_CODE_LOG: {otp_code}")
-        with open("otp.txt", "w") as f:
-            f.write(otp_code)
         try:
             email_service.send_otp_email(email, otp_code, expiry_minutes=5)
         except Exception as e:
