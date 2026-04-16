@@ -9,7 +9,7 @@ Single-device enforcement uses device_id binding, not a logged_in flag lock.
 On each new login the device_id is updated — the old device gets a 403 on its
 next authenticated request because the stored device_id no longer matches.
 """
-
+import secrets
 import random
 import string
 import logging
@@ -113,7 +113,7 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
         # Temporary password — will be replaced by chosen password in complete_registration
-        temp_password = f"SV_TEMP_{email}_OTP_VERIFIED!"
+        temp_password = secrets.token_urlsafe(32)
         try:
             auth_response = auth_client.auth.sign_up({"email": email, "password": temp_password})
         except Exception as e:
