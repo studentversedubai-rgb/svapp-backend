@@ -279,8 +279,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
             
         is_auth_strict = path.startswith("/auth/send-otp") or path.startswith("/auth/verify-otp") or path.startswith("/auth/login")
-        if not is_auth_strict:
-            return await call_next(request)
             
         is_payment = path.startswith("/payments")
         
