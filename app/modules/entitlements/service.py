@@ -504,6 +504,10 @@ class EntitlementService:
         if not entitlement:
             raise ValueError("Entitlement not found")
         
+        # Verify the requesting user owns this entitlement
+        if user_id and entitlement['user_id'] != user_id:
+            raise ValueError("Unauthorized: this entitlement does not belong to you")
+
         # Validate state and void window
         state = EntitlementState(entitlement['state'])
         
