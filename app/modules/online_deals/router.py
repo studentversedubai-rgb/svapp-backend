@@ -155,7 +155,7 @@ async def get_online_deal_by_id(
                 detail="Online deal not found"
             )
         
-        return OnlineDealDetail(
+return OnlineDealDetail(
             id=result['id'],
             type=result['type'],
             merchant=MerchantBasic(
@@ -234,7 +234,11 @@ async def create_online_deal(
         return OnlineDealDetail(
             id=result['id'],
             type=result['type'],
-            brand=result['brand'],
+            merchant=MerchantBasic(
+                id=result['merchants']['id'],
+                name=result['merchants']['name'],
+                logo_url=result['merchants'].get('logo_url')
+            ),
             category=result['category'],
             title=result['title'],
             discount=result['discount'],
@@ -313,7 +317,11 @@ async def update_online_deal(
         return OnlineDealDetail(
             id=result['id'],
             type=result['type'],
-            brand=result['brand'],
+            merchant=MerchantBasic(
+                id=result['merchants']['id'],
+                name=result['merchants']['name'],
+                logo_url=result['merchants'].get('logo_url')
+            ),
             category=result['category'],
             title=result['title'],
             discount=result['discount'],
