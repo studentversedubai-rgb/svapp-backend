@@ -28,6 +28,7 @@ class MerchantBasic(BaseModel):
     id: str
     name: str
     logo_url: Optional[str] = None
+    color: Optional[str] = None
     
     class Config:
         from_attributes = True

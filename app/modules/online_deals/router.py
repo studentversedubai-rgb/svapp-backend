@@ -86,14 +86,15 @@ async def get_online_deals(
                 merchant=MerchantBasic(
                     id=item['merchants']['id'],
                     name=item['merchants']['name'],
-                    logo_url=item['merchants'].get('logo_url')
+                    logo_url=item['merchants'].get('logo_url'),
+                    color=item['merchants'].get('color')
                 ),
                 category=item['category'],
                 title=item['title'],
                 discount=item['discount'],
                 description=item.get('description'),
-                image=item['image'],
-                brand_color=item.get('brand_color'),
+                image=item['merchants'].get('logo_url') or item['image'],
+                brand_color=item['merchants'].get('color') or item.get('brand_color'),
                 highlights=item.get('highlights'),
                 isOnline=True,
                 is_active=item['is_active'],
@@ -155,20 +156,21 @@ async def get_online_deal_by_id(
                 detail="Online deal not found"
             )
         
-return OnlineDealDetail(
+        return OnlineDealDetail(
             id=result['id'],
             type=result['type'],
             merchant=MerchantBasic(
                 id=result['merchants']['id'],
                 name=result['merchants']['name'],
-                logo_url=result['merchants'].get('logo_url')
+                logo_url=result['merchants'].get('logo_url'),
+                color=result['merchants'].get('color')
             ),
             category=result['category'],
             title=result['title'],
             discount=result['discount'],
             description=result.get('description'),
-            image=result['image'],
-            brand_color=result.get('brand_color'),
+            image=result['merchants'].get('logo_url') or result['image'],
+            brand_color=result['merchants'].get('color') or result.get('brand_color'),
             highlights=result.get('highlights'),
             terms=result.get('terms'),
             discount_code=result.get('discount_code'),
