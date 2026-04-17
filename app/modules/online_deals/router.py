@@ -16,7 +16,8 @@ from app.modules.online_deals.schemas import (
     OnlineDealDetail,
     OnlineDealListItem,
     OnlineDealCreateRequest,
-    OnlineDealUpdateRequest
+    OnlineDealUpdateRequest,
+    MerchantBasic
 )
 
 logger = logging.getLogger(__name__)
@@ -77,12 +78,16 @@ async def get_online_deals(
             category=category
         )
         
-        # Transform data to include isOnline flag
+        # Transform data to include merchant and isOnline flag
         items = [
             OnlineDealListItem(
                 id=item['id'],
                 type=item['type'],
-                brand=item['brand'],
+                merchant=MerchantBasic(
+                    id=item['merchants']['id'],
+                    name=item['merchants']['name'],
+                    logo_url=item['merchants'].get('logo_url')
+                ),
                 category=item['category'],
                 title=item['title'],
                 discount=item['discount'],
@@ -153,7 +158,11 @@ async def get_online_deal_by_id(
         return OnlineDealDetail(
             id=result['id'],
             type=result['type'],
-            brand=result['brand'],
+            merchant=MerchantBasic(
+                id=result['merchants']['id'],
+                name=result['merchants']['name'],
+                logo_url=result['merchants'].get('logo_url')
+            ),
             category=result['category'],
             title=result['title'],
             discount=result['discount'],

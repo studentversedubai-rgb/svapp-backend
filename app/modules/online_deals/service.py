@@ -27,7 +27,7 @@ class OnlineDealService:
         category: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Get paginated list of online deals.
+        Get paginated list of online deals with merchant info.
         
         Args:
             page: Page number (1-indexed)
@@ -35,13 +35,15 @@ class OnlineDealService:
             category: Optional category filter
             
         Returns:
-            Dictionary with paginated online deals
+            Dictionary with paginated online deals including merchant data
         """
         try:
-            # Build query
+            # Build query with merchant join
+            # Note: Supabase doesn't support proper joins in the Python client
+            # So we fetch online deals first, then fetch merchants separately
             query = (
                 self.supabase.table('online_deals')
-                .select('*', count='exact')
+                .select('*, merchants!inner(*)', count='exact')
                 .eq('is_active', True)
                 .order('is_featured', desc=True)
                 .order('created_at', desc=True)
@@ -87,7 +89,7 @@ class OnlineDealService:
         try:
             response = (
                 self.supabase.table('online_deals')
-                .select('*')
+                .select('*, merchants(*)')
                 .eq('id', deal_id)
                 .eq('is_active', True)
                 .execute()
@@ -124,9 +126,19 @@ class OnlineDealService:
                 # Clear discount_code for affiliate links
                 deal_data['discount_code'] = None
             
-            response = (
+            insert_response = (
                 self.supabase.table('online_deals')
                 .insert(deal_data)
+                .execute()
+            )
+            
+            created_id = insert_response.data[0]['id']
+            
+            # Fetch with merchant data
+            response = (
+                self.supabase.table('online_deals')
+                .select('*, merchants(*)')
+                .eq('id', created_id)
                 .execute()
             )
             
@@ -155,17 +167,25 @@ class OnlineDealService:
             # Add updated_at timestamp
             deal_data['updated_at'] = datetime.utcnow().isoformat()
             
-            response = (
+            update_response = (
                 self.supabase.table('online_deals')
                 .update(deal_data)
                 .eq('id', deal_id)
                 .execute()
             )
             
-            if not response.data:
+            if not update_response.data:
                 return None
             
-            return response.data[0]
+            # Fetch with merchant data
+            response = (
+                self.supabase.table('online_deals')
+                .select('*, merchants(*)')
+                .eq('id', deal_id)
+                .execute()
+            )
+            
+            return response.data[0] if response.data else None
             
         except Exception as e:
             logger.error(f"Error in update_online_deal: {e}")

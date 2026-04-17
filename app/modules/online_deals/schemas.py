@@ -20,6 +20,20 @@ class OnlineDealType(str, Enum):
 
 
 # ================================
+# MERCHANT SCHEMA
+# ================================
+
+class MerchantBasic(BaseModel):
+    """Basic merchant info for online deals"""
+    id: str
+    name: str
+    logo_url: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+
+# ================================
 # RESPONSE SCHEMAS
 # ================================
 
@@ -27,7 +41,7 @@ class OnlineDealListItem(BaseModel):
     """Online deal in list view"""
     id: str
     type: OnlineDealType
-    brand: str
+    merchant: MerchantBasic
     category: str
     title: str
     discount: str
@@ -47,7 +61,7 @@ class OnlineDealDetail(BaseModel):
     """Detailed online deal view"""
     id: str
     type: OnlineDealType
-    brand: str
+    merchant: MerchantBasic
     category: str
     title: str
     discount: str
@@ -83,7 +97,7 @@ class OnlineDealCreateRequest(BaseModel):
     """Request for creating an online deal (Admin only)"""
     model_config = ConfigDict(extra='forbid')
     type: OnlineDealType
-    brand: str = Field(..., min_length=1, max_length=255)
+    merchant_id: str = Field(..., min_length=1)
     category: str = Field(..., min_length=1, max_length=100)
     title: str = Field(..., min_length=1, max_length=500)
     discount: str = Field(..., min_length=1, max_length=100)
