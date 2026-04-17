@@ -79,29 +79,36 @@ async def get_online_deals(
         )
         
         # Transform data to include merchant and isOnline flag
-        items = [
-            OnlineDealListItem(
+        items = []
+        for item in result['items']:
+            merchants_data = item.get('merchants') or {}
+            merchant_logo = merchants_data.get('logo_url')
+            merchant_color = merchants_data.get('color')
+            
+            # Use merchant logo/color if available, otherwise use deal's own image/brand_color
+            deal_image = merchant_logo if merchant_logo else item.get('image', '')
+            deal_brand_color = merchant_color if merchant_color else item.get('brand_color')
+            
+            items.append(OnlineDealListItem(
                 id=item['id'],
                 type=item['type'],
                 merchant=MerchantBasic(
-                    id=item['merchants']['id'],
-                    name=item['merchants']['name'],
-                    logo_url=item['merchants'].get('logo_url'),
-                    color=item['merchants'].get('color')
+                    id=merchants_data.get('id', ''),
+                    name=merchants_data.get('name', ''),
+                    logo_url=merchant_logo,
+                    color=merchant_color
                 ),
                 category=item['category'],
                 title=item['title'],
                 discount=item['discount'],
                 description=item.get('description'),
-                image=item['merchants'].get('logo_url') or item['image'],
-                brand_color=item['merchants'].get('color') or item.get('brand_color'),
+                image=deal_image,
+                brand_color=deal_brand_color,
                 highlights=item.get('highlights'),
                 isOnline=True,
                 is_active=item['is_active'],
                 created_at=item['created_at']
-            )
-            for item in result['items']
-        ]
+            ))
         
         return PaginatedOnlineDealsResponse(
             items=items,
@@ -156,21 +163,27 @@ async def get_online_deal_by_id(
                 detail="Online deal not found"
             )
         
+        merchants_data = result.get('merchants') or {}
+        merchant_logo = merchants_data.get('logo_url')
+        merchant_color = merchants_data.get('color')
+        deal_image = merchant_logo if merchant_logo else result.get('image', '')
+        deal_brand_color = merchant_color if merchant_color else result.get('brand_color')
+        
         return OnlineDealDetail(
             id=result['id'],
             type=result['type'],
             merchant=MerchantBasic(
-                id=result['merchants']['id'],
-                name=result['merchants']['name'],
-                logo_url=result['merchants'].get('logo_url'),
-                color=result['merchants'].get('color')
+                id=merchants_data.get('id', ''),
+                name=merchants_data.get('name', ''),
+                logo_url=merchant_logo,
+                color=merchant_color
             ),
             category=result['category'],
             title=result['title'],
             discount=result['discount'],
             description=result.get('description'),
-            image=result['merchants'].get('logo_url') or result['image'],
-            brand_color=result['merchants'].get('color') or result.get('brand_color'),
+            image=deal_image,
+            brand_color=deal_brand_color,
             highlights=result.get('highlights'),
             terms=result.get('terms'),
             discount_code=result.get('discount_code'),
@@ -233,20 +246,27 @@ async def create_online_deal(
             deal_data=deal_request.model_dump(exclude_unset=True)
         )
         
+        merchants_data = result.get('merchants') or {}
+        merchant_logo = merchants_data.get('logo_url')
+        merchant_color = merchants_data.get('color')
+        deal_image = merchant_logo if merchant_logo else result.get('image', '')
+        deal_brand_color = merchant_color if merchant_color else result.get('brand_color')
+        
         return OnlineDealDetail(
             id=result['id'],
             type=result['type'],
             merchant=MerchantBasic(
-                id=result['merchants']['id'],
-                name=result['merchants']['name'],
-                logo_url=result['merchants'].get('logo_url')
+                id=merchants_data.get('id', ''),
+                name=merchants_data.get('name', ''),
+                logo_url=merchant_logo,
+                color=merchant_color
             ),
             category=result['category'],
             title=result['title'],
             discount=result['discount'],
             description=result.get('description'),
-            image=result['image'],
-            brand_color=result.get('brand_color'),
+            image=deal_image,
+            brand_color=deal_brand_color,
             highlights=result.get('highlights'),
             terms=result.get('terms'),
             discount_code=result.get('discount_code'),
@@ -316,20 +336,27 @@ async def update_online_deal(
                 detail="Online deal not found"
             )
         
+        merchants_data = result.get('merchants') or {}
+        merchant_logo = merchants_data.get('logo_url')
+        merchant_color = merchants_data.get('color')
+        deal_image = merchant_logo if merchant_logo else result.get('image', '')
+        deal_brand_color = merchant_color if merchant_color else result.get('brand_color')
+        
         return OnlineDealDetail(
             id=result['id'],
             type=result['type'],
             merchant=MerchantBasic(
-                id=result['merchants']['id'],
-                name=result['merchants']['name'],
-                logo_url=result['merchants'].get('logo_url')
+                id=merchants_data.get('id', ''),
+                name=merchants_data.get('name', ''),
+                logo_url=merchant_logo,
+                color=merchant_color
             ),
             category=result['category'],
             title=result['title'],
             discount=result['discount'],
             description=result.get('description'),
-            image=result['image'],
-            brand_color=result.get('brand_color'),
+            image=deal_image,
+            brand_color=deal_brand_color,
             highlights=result.get('highlights'),
             terms=result.get('terms'),
             discount_code=result.get('discount_code'),
