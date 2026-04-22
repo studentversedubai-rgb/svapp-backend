@@ -223,7 +223,7 @@ class AuthService:
         try:
             supabase.storage.from_(VERIFICATION_BUCKET_NAME).upload(
                 path=path,
-                file=BytesIO(payload["bytes"]),
+                file=payload["bytes"],
                 file_options={
                     "content-type": payload["mime_type"],
                     "upsert": "false",
