@@ -11,7 +11,7 @@ from postmarker.core import PostmarkClient
 logger = logging.getLogger(__name__)
 
 POSTMARK_API_KEY = os.getenv("POSTMARK_API_KEY")
-FROM_ADDRESS = "register@studentverseofficial.com"
+FROM_ADDRESS = "verify@studentverseofficial.com"
 
 if not POSTMARK_API_KEY:
     logger.warning("POSTMARK_API_KEY not found in environment variables")
