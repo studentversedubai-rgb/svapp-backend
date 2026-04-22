@@ -201,11 +201,33 @@ async def update_profile(
     Not Allowed: email, first_name, last_name, device_id.
     """
     updated_user = await auth_service.update_profile(current_user["id"], request)
-    
+
     profile = UserProfile(**updated_user)
     if profile.first_name and profile.last_name:
          profile.full_name = f"{profile.first_name} {profile.last_name}"
-         
+
+    return ProfileResponse(data=profile)
+
+
+@router.post("/profile/image", response_model=ProfileResponse)
+async def upload_profile_image(
+    file: UploadFile = File(...),
+    current_user: Dict = Depends(get_current_user),
+):
+    """
+    Upload a profile picture.
+
+    Stores the image in the public user-profile-images Supabase Storage bucket
+    and updates users.avatar_url with the resolved public URL. Returns the full
+    updated profile so the client does not need a follow-up /auth/me call.
+    """
+    await auth_service.upload_profile_image(current_user["id"], file)
+    updated = await auth_service.get_profile(current_user["id"])
+
+    profile = UserProfile(**updated)
+    if profile.first_name and profile.last_name:
+        profile.full_name = f"{profile.first_name} {profile.last_name}"
+
     return ProfileResponse(data=profile)
 
 

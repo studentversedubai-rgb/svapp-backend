@@ -28,6 +28,14 @@ from app.modules.auth.schemas import RegisterRequest, ProfileUpdateRequest, User
 logger = logging.getLogger(__name__)
 VERIFICATION_BUCKET_NAME = os.getenv("VERIFICATION_BUCKET_NAME", "user-verification-documents")
 VERIFICATION_FILE_MAX_BYTES = int(os.getenv("VERIFICATION_FILE_MAX_BYTES", "10485760"))
+PROFILE_IMAGE_BUCKET_NAME = os.getenv("PROFILE_IMAGE_BUCKET_NAME", "user-profile-images")
+PROFILE_IMAGE_MAX_BYTES = int(os.getenv("PROFILE_IMAGE_MAX_BYTES", "5242880"))
+ALLOWED_PROFILE_IMAGE_MIME_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 
 
 class AuthService:
@@ -1028,6 +1036,110 @@ class AuthService:
         except Exception as e:
             logger.error(f"Update profile error: {e}")
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(e))
+
+    async def get_profile(self, user_id: str) -> Dict[str, Any]:
+        """Fetch a single public.users row by id."""
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database connection error")
+
+        try:
+            result = supabase.table("users").select("*").eq("id", user_id).single().execute()
+        except Exception as e:
+            logger.error(f"Get profile error: {e}")
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to fetch profile")
+
+        if not result.data:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+        return result.data
+
+    async def upload_profile_image(self, user_id: str, upload: UploadFile) -> Dict[str, Any]:
+        """
+        Upload a profile picture to the public profile-images bucket and update
+        public.users.avatar_url with the resolved CDN URL.
+
+        Each upload writes to a unique timestamped path so old URLs naturally
+        cache-bust on the frontend.
+        """
+        if not upload or not upload.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Profile image is required.",
+            )
+
+        mime_type = (upload.content_type or "").lower()
+        if mime_type not in ALLOWED_PROFILE_IMAGE_MIME_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Profile image must be a JPG, PNG, or WEBP file.",
+            )
+
+        data = await upload.read()
+        await upload.close()
+
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Profile image is empty.",
+            )
+
+        if len(data) > PROFILE_IMAGE_MAX_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Profile image exceeds the 5MB limit.",
+            )
+
+        extension = os.path.splitext(upload.filename)[1].lower()
+        if not extension:
+            extension = ALLOWED_PROFILE_IMAGE_MIME_TYPES.get(mime_type) or ".jpg"
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        path = f"{user_id}/pfp-{timestamp_ms}{extension}"
+
+        try:
+            supabase.storage.from_(PROFILE_IMAGE_BUCKET_NAME).upload(
+                path=path,
+                file=data,
+                file_options={
+                    "content-type": mime_type,
+                    "upsert": "false",
+                },
+            )
+        except Exception as e:
+            logger.error(f"Failed to upload profile image {path}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to upload profile image.",
+            )
+
+        try:
+            public_url = supabase.storage.from_(PROFILE_IMAGE_BUCKET_NAME).get_public_url(path)
+        except Exception as e:
+            logger.error(f"Failed to resolve public URL for {path}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to resolve profile image URL.",
+            )
+
+        avatar_url = (public_url or "").strip().rstrip("?")
+
+        try:
+            supabase.table("users").update({"avatar_url": avatar_url}).eq("id", user_id).execute()
+        except Exception as e:
+            logger.error(f"Failed to persist avatar_url for user {user_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Profile image uploaded but failed to save on profile.",
+            )
+
+        return {"avatar_url": avatar_url, "storage_path": path}
 
     async def get_user_analytics(self, user_id: str) -> UserStats:
         """Calculate user analytics from redemptions."""
