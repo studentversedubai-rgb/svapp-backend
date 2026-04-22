@@ -36,9 +36,10 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 content_length = 0
             if content_length > self.max_upload_size:
+                max_mb = max(1, round(self.max_upload_size / (1024 * 1024)))
                 return JSONResponse(
                     status_code=413,
-                    content={"ok": False, "error": "Request entity too large. Max allowed size is 1MB."}
+                    content={"ok": False, "error": f"Request entity too large. Max allowed size is {max_mb}MB."}
                 )
         response = await call_next(request)
         return response

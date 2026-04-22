@@ -4,7 +4,7 @@ Authentication Router
 Handles OTP-based authentication and Profile Management.
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends, Request
+from fastapi import APIRouter, HTTPException, status, Depends, Request, Form, File, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.modules.auth.schemas import (
     SendOTPRequest, 
@@ -17,7 +17,7 @@ from app.modules.auth.schemas import (
     ProfileResponse,
     AnalyticsResponse,
     UserProfile,
-    UserStats
+    UserStats,
 )
 from app.modules.auth.service import auth_service
 from app.core.security import get_current_user, get_current_user_no_device_check
@@ -76,6 +76,60 @@ async def forgot_password_reset(request: ResetPasswordRequest):
     Reset password using the temporary reset token
     """
     result = await auth_service.forgot_password_reset(request.email, request.reset_token, request.new_password)
+    return {"ok": True, "data": result}
+
+
+@router.post("/manual-signup")
+async def manual_signup(
+    email: str = Form(...),
+    first_name: str = Form(...),
+    last_name: str = Form(...),
+    nationality: str = Form(""),
+    university: str = Form(""),
+    phone_number: str = Form(""),
+    date_of_birth: str = Form(...),
+    password: str = Form(...),
+    student_id: str = Form(""),
+    enrollment_document: UploadFile = File(...),
+    student_id_document: UploadFile = File(...),
+):
+    """
+    Create a pending-review account with uploaded verification documents.
+
+    Public endpoint. Does not return an authenticated app session.
+    """
+    result = await auth_service.manual_signup(
+        email=email,
+        first_name=first_name,
+        last_name=last_name,
+        nationality=nationality or None,
+        university=university or None,
+        phone_number=phone_number or None,
+        date_of_birth=date_of_birth,
+        password=password,
+        student_id=student_id or None,
+        enrollment_document=enrollment_document,
+        student_id_document=student_id_document,
+    )
+    return {"ok": True, "data": result}
+
+
+@router.post("/manual-signup/resubmit")
+async def manual_signup_resubmit(
+    email: str = Form(...),
+    password: str = Form(...),
+    enrollment_document: UploadFile = File(...),
+    student_id_document: UploadFile = File(...),
+):
+    """
+    Re-submit verification documents for a previously rejected account.
+    """
+    result = await auth_service.manual_signup_resubmit(
+        email=email,
+        password=password,
+        enrollment_document=enrollment_document,
+        student_id_document=student_id_document,
+    )
     return {"ok": True, "data": result}
 
 

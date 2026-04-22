@@ -224,3 +224,25 @@ class MicrosoftRecoveryVerifyResponse(BaseModel):
     """Response for POST /auth/forgot-password/verify-microsoft"""
     ok: bool = True
     data: Dict[str, Any] = Field(..., description="Email and short-lived reset token")
+
+
+class ManualSignupResponse(BaseModel):
+    """Response for manual document-review signup flows."""
+    ok: bool = True
+    data: Dict[str, Any] = Field(..., description="Email, status, and confirmation message")
+
+
+class RejectVerificationRequest(BaseModel):
+    """Reject a verification submission with a required reason."""
+    model_config = ConfigDict(extra='forbid')
+    reason: str = Field(..., min_length=5, max_length=500, description="Reason shown to the student")
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_valid(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Reason cannot be empty")
+        if "<" in value or ">" in value or "script" in value.lower():
+            raise ValueError("Reason contains invalid characters")
+        return value

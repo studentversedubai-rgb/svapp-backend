@@ -14,18 +14,267 @@ import random
 import string
 import logging
 import uuid
+import os
+import mimetypes
+from io import BytesIO
+from datetime import date, datetime, timezone
 from typing import Optional, Dict, Any
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, UploadFile
 from app.core.database import get_supabase_client, create_fresh_supabase_client
 from app.core.redis import redis_manager
 from app.core.email import email_service
 from app.modules.auth.schemas import RegisterRequest, ProfileUpdateRequest, UserStats
 
 logger = logging.getLogger(__name__)
+VERIFICATION_BUCKET_NAME = os.getenv("VERIFICATION_BUCKET_NAME", "user-verification-documents")
+VERIFICATION_FILE_MAX_BYTES = int(os.getenv("VERIFICATION_FILE_MAX_BYTES", "10485760"))
 
 
 class AuthService:
     """Handles all authentication operations."""
+
+    ALLOWED_VERIFICATION_MIME_TYPES = {
+        "application/pdf": ".pdf",
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/jpg": ".jpg",
+    }
+
+    def _normalize_email(self, email: str) -> str:
+        return email.strip().lower()
+
+    def _extract_auth_user_id(self, auth_user: Any) -> str:
+        if hasattr(auth_user, "id") and getattr(auth_user, "id"):
+            return str(getattr(auth_user, "id"))
+        if isinstance(auth_user, dict) and auth_user.get("id"):
+            return str(auth_user["id"])
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create account. Please try again.",
+        )
+
+    def _build_review_error_detail(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        verification_status = user.get("verification_status") or "pending_review"
+        reason = user.get("verification_rejection_reason")
+
+        if verification_status == "rejected":
+            return {
+                "code": "ACCOUNT_REJECTED",
+                "message": "Your account review needs updated documents before you can log in.",
+                "verification_status": "rejected",
+                "review_reason": reason,
+            }
+
+        return {
+            "code": "ACCOUNT_PENDING_REVIEW",
+            "message": "Your account is still under review.",
+            "verification_status": "pending_review",
+            "review_reason": reason,
+        }
+
+    def _lookup_verified_university(self, email: str) -> str:
+        normalized_email = self._normalize_email(email)
+        try:
+            domain = normalized_email.split("@", 1)[1]
+        except IndexError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid email format")
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        try:
+            domain_result = (
+                supabase.table("university_domains")
+                .select("university_name")
+                .eq("domain", domain)
+                .eq("is_active", True)
+                .execute()
+            )
+        except Exception as e:
+            logger.error(f"University domain lookup error: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to verify university domain",
+            )
+
+        if not domain_result.data:
+            logger.warning(f"Unsupported university domain: {domain} (email: {normalized_email})")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your university is not supported yet. Only verified UAE university email domains are accepted.",
+            )
+
+        return domain_result.data[0]["university_name"]
+
+    def _parse_date_of_birth(self, date_of_birth: str) -> tuple[str, int]:
+        try:
+            parsed = datetime.strptime(date_of_birth.strip(), "%Y-%m-%d").date()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="date_of_birth must be in YYYY-MM-DD format",
+            )
+
+        today = date.today()
+        age = today.year - parsed.year - (
+            (today.month, today.day) < (parsed.month, parsed.day)
+        )
+
+        if age < 18:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You must be at least 18 years old to register.",
+            )
+
+        if age > 120:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid date of birth.",
+            )
+
+        return parsed.isoformat(), age
+
+    async def _read_verification_file(self, upload: UploadFile, label: str) -> Dict[str, Any]:
+        if not upload or not upload.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{label} is required.",
+            )
+
+        mime_type = (upload.content_type or "").lower()
+        if mime_type not in self.ALLOWED_VERIFICATION_MIME_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{label} must be a PDF, JPG, or PNG file.",
+            )
+
+        data = await upload.read()
+        await upload.close()
+
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{label} is empty.",
+            )
+
+        if len(data) > VERIFICATION_FILE_MAX_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"{label} exceeds the 10MB limit.",
+            )
+
+        extension = os.path.splitext(upload.filename)[1].lower()
+        if not extension:
+            extension = self.ALLOWED_VERIFICATION_MIME_TYPES.get(mime_type) or mimetypes.guess_extension(mime_type) or ""
+
+        return {
+            "bytes": data,
+            "mime_type": mime_type,
+            "extension": extension or ".bin",
+            "filename": upload.filename,
+        }
+
+    def _upload_verification_document(
+        self,
+        *,
+        user_id: str,
+        submission_id: str,
+        slug: str,
+        payload: Dict[str, Any],
+    ) -> str:
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        path = f"{user_id}/{submission_id}/{slug}{payload['extension']}"
+
+        try:
+            supabase.storage.from_(VERIFICATION_BUCKET_NAME).upload(
+                path=path,
+                file=BytesIO(payload["bytes"]),
+                file_options={
+                    "content-type": payload["mime_type"],
+                    "upsert": "false",
+                },
+            )
+        except Exception as e:
+            logger.error(f"Failed to upload verification document {path}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to upload verification documents.",
+            )
+
+        return path
+
+    def _delete_storage_object(self, path: Optional[str]) -> None:
+        if not path:
+            return
+
+        supabase = get_supabase_client()
+        if not supabase:
+            return
+
+        try:
+            supabase.storage.from_(VERIFICATION_BUCKET_NAME).remove([path])
+        except Exception as e:
+            logger.error(f"Failed to remove storage object {path}: {e}")
+
+    def _send_review_email(self, email_method, *args) -> None:
+        try:
+            email_method(*args)
+        except Exception as e:
+            logger.error(f"Review email send failed: {e}")
+
+    def _insert_user_row_for_signup(
+        self,
+        *,
+        user_id: str,
+        payload: RegisterRequest,
+        age: int,
+        signup_method: str,
+        verification_status: str,
+    ) -> None:
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        profile_data = {
+            "id": user_id,
+            "email": self._normalize_email(payload.email),
+            "name": payload.name,
+            "first_name": payload.first_name,
+            "last_name": payload.last_name,
+            "student_id": payload.student_id,
+            "nationality": payload.nationality,
+            "university": payload.university,
+            "phone_number": payload.phone_number,
+            "age": age,
+            "date_of_birth": payload.date_of_birth,
+            "account_type": "free",
+            "logged_in": False,
+            "verification_status": verification_status,
+            "verification_submitted_at": datetime.now(timezone.utc).isoformat(),
+            "signup_method": signup_method,
+        }
+
+        try:
+            supabase.table("users").insert(profile_data).execute()
+        except Exception as e:
+            logger.error(f"Failed to insert user into public.users: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create user profile. Please try again.",
+            )
 
     # ------------------------------------------------------------------
     # OTP (sign-up student verification only)
@@ -137,7 +386,9 @@ class AuthService:
             supabase.table("users").insert({
                 "id": user_id,
                 "email": email,
-                "account_type": "free"
+                "account_type": "free",
+                "verification_status": "approved",
+                "signup_method": "legacy_otp",
             }).execute()
             logger.info(f"Created user in public.users: {email}")
         except Exception as e:
@@ -225,6 +476,308 @@ class AuthService:
             
         redis_manager.delete(token_key)
         return {"message": "Password reset successfully"}
+
+    # ------------------------------------------------------------------
+    # Manual Review Signup
+    # ------------------------------------------------------------------
+
+    async def manual_signup(
+        self,
+        *,
+        email: str,
+        first_name: str,
+        last_name: str,
+        nationality: Optional[str],
+        university: Optional[str],
+        phone_number: Optional[str],
+        date_of_birth: str,
+        password: str,
+        student_id: Optional[str],
+        enrollment_document: UploadFile,
+        student_id_document: UploadFile,
+    ) -> Dict[str, Any]:
+        normalized_email = self._normalize_email(email)
+        canonical_university = self._lookup_verified_university(normalized_email)
+        date_of_birth_iso, age = self._parse_date_of_birth(date_of_birth)
+
+        register_request = RegisterRequest(
+            email=normalized_email,
+            name=f"{first_name} {last_name}",
+            first_name=first_name,
+            last_name=last_name,
+            student_id=student_id,
+            nationality=nationality,
+            university=canonical_university,
+            phone_number=phone_number,
+            age=age,
+            date_of_birth=date_of_birth_iso,
+            password=password,
+        )
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
+
+        existing = supabase.table("users").select(
+            "id, verification_status"
+        ).eq("email", normalized_email).execute()
+        if existing.data:
+            existing_status = existing.data[0].get("verification_status") or "approved"
+            if existing_status == "pending_review":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Your account is already under review.",
+                )
+            if existing_status == "rejected":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Your account was rejected. Please resubmit your documents instead.",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this email already exists. Please use the login screen.",
+            )
+
+        enrollment_payload = await self._read_verification_file(enrollment_document, "Enrollment document")
+        student_id_payload = await self._read_verification_file(student_id_document, "Student ID document")
+
+        auth_user = None
+        submission_id = None
+        uploaded_paths: list[str] = []
+
+        try:
+            auth_response = supabase.auth.admin.create_user({
+                "email": normalized_email,
+                "password": password,
+                "email_confirm": True,
+                "user_metadata": {
+                    "signup_method": "manual_review",
+                },
+            })
+            auth_user = getattr(auth_response, "user", None) or getattr(auth_response, "data", None)
+            if not auth_user:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create account. Please try again.",
+                )
+
+            user_id = self._extract_auth_user_id(auth_user)
+
+            self._insert_user_row_for_signup(
+                user_id=user_id,
+                payload=register_request,
+                age=age,
+                signup_method="manual_review",
+                verification_status="pending_review",
+            )
+
+            submission_insert = supabase.table("user_verification_submissions").insert({
+                "user_id": user_id,
+                "status": "pending_review",
+            }).execute()
+            if not submission_insert.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create verification submission.",
+                )
+            submission_id = submission_insert.data[0]["id"]
+
+            enrollment_path = self._upload_verification_document(
+                user_id=user_id,
+                submission_id=submission_id,
+                slug="enrollment",
+                payload=enrollment_payload,
+            )
+            uploaded_paths.append(enrollment_path)
+            student_id_path = self._upload_verification_document(
+                user_id=user_id,
+                submission_id=submission_id,
+                slug="student-id",
+                payload=student_id_payload,
+            )
+            uploaded_paths.append(student_id_path)
+
+            supabase.table("user_verification_submissions").update({
+                "enrollment_document_path": enrollment_path,
+                "enrollment_document_name": enrollment_payload["filename"],
+                "student_id_document_path": student_id_path,
+                "student_id_document_name": student_id_payload["filename"],
+            }).eq("id", submission_id).execute()
+
+            self._send_review_email(email_service.send_review_submission_email, normalized_email)
+
+            return {
+                "email": normalized_email,
+                "verification_status": "pending_review",
+                "message": "Your account is under review. We will email you once it is approved.",
+            }
+        except HTTPException:
+            for path in uploaded_paths:
+                self._delete_storage_object(path)
+            if submission_id:
+                try:
+                    supabase.table("user_verification_submissions").delete().eq("id", submission_id).execute()
+                except Exception as e:
+                    logger.error(f"Failed to rollback verification submission {submission_id}: {e}")
+            if auth_user:
+                try:
+                    rollback_user_id = getattr(auth_user, "id", None) or (
+                        auth_user.get("id") if isinstance(auth_user, dict) else None
+                    )
+                    if rollback_user_id:
+                        supabase.table("users").delete().eq("id", str(rollback_user_id)).execute()
+                        supabase.auth.admin.delete_user(str(rollback_user_id))
+                except Exception as e:
+                    logger.error(f"Failed to rollback manual signup for {normalized_email}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Manual signup failed for {normalized_email}: {e}", exc_info=True)
+            for path in uploaded_paths:
+                self._delete_storage_object(path)
+            if submission_id:
+                try:
+                    supabase.table("user_verification_submissions").delete().eq("id", submission_id).execute()
+                except Exception:
+                    pass
+            if auth_user:
+                try:
+                    rollback_user_id = getattr(auth_user, "id", None) or (
+                        auth_user.get("id") if isinstance(auth_user, dict) else None
+                    )
+                    if rollback_user_id:
+                        supabase.table("users").delete().eq("id", str(rollback_user_id)).execute()
+                        supabase.auth.admin.delete_user(str(rollback_user_id))
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to submit account for review. Please try again.",
+            )
+
+    async def manual_signup_resubmit(
+        self,
+        *,
+        email: str,
+        password: str,
+        enrollment_document: UploadFile,
+        student_id_document: UploadFile,
+    ) -> Dict[str, Any]:
+        normalized_email = self._normalize_email(email)
+        enrollment_payload = await self._read_verification_file(enrollment_document, "Enrollment document")
+        student_id_payload = await self._read_verification_file(student_id_document, "Student ID document")
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
+
+        user_lookup = supabase.table("users").select(
+            "id, email, verification_status"
+        ).eq("email", normalized_email).execute()
+        if not user_lookup.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email.")
+
+        user = user_lookup.data[0]
+        if user.get("verification_status") != "rejected":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only rejected accounts can resubmit documents.",
+            )
+
+        auth_client = create_fresh_supabase_client()
+        if not auth_client:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
+
+        try:
+            auth_response = auth_client.auth.sign_in_with_password({"email": normalized_email, "password": password})
+        except Exception as e:
+            logger.error(f"Manual resubmission password validation failed: {e}")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+
+        if not auth_response or not auth_response.user or not auth_response.session:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+
+        user_id = str(auth_response.user.id)
+        access_token = auth_response.session.access_token
+
+        submission_id = None
+        uploaded_paths: list[str] = []
+
+        try:
+            submission_insert = supabase.table("user_verification_submissions").insert({
+                "user_id": user_id,
+                "status": "pending_review",
+            }).execute()
+            if not submission_insert.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create verification submission.",
+                )
+            submission_id = submission_insert.data[0]["id"]
+
+            enrollment_path = self._upload_verification_document(
+                user_id=user_id,
+                submission_id=submission_id,
+                slug="enrollment",
+                payload=enrollment_payload,
+            )
+            uploaded_paths.append(enrollment_path)
+            student_id_path = self._upload_verification_document(
+                user_id=user_id,
+                submission_id=submission_id,
+                slug="student-id",
+                payload=student_id_payload,
+            )
+            uploaded_paths.append(student_id_path)
+
+            supabase.table("user_verification_submissions").update({
+                "enrollment_document_path": enrollment_path,
+                "enrollment_document_name": enrollment_payload["filename"],
+                "student_id_document_path": student_id_path,
+                "student_id_document_name": student_id_payload["filename"],
+            }).eq("id", submission_id).execute()
+
+            supabase.table("users").update({
+                "verification_status": "pending_review",
+                "verification_submitted_at": datetime.now(timezone.utc).isoformat(),
+                "verification_reviewed_at": None,
+                "verification_reviewed_by": None,
+                "verification_rejection_reason": None,
+            }).eq("id", user_id).execute()
+
+            self._send_review_email(email_service.send_review_resubmitted_email, normalized_email)
+
+            return {
+                "email": normalized_email,
+                "verification_status": "pending_review",
+                "message": "Your updated documents are under review.",
+            }
+        except HTTPException:
+            for path in uploaded_paths:
+                self._delete_storage_object(path)
+            if submission_id:
+                try:
+                    supabase.table("user_verification_submissions").delete().eq("id", submission_id).execute()
+                except Exception as e:
+                    logger.error(f"Failed to rollback resubmission {submission_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Manual resubmission failed for {normalized_email}: {e}", exc_info=True)
+            for path in uploaded_paths:
+                self._delete_storage_object(path)
+            if submission_id:
+                try:
+                    supabase.table("user_verification_submissions").delete().eq("id", submission_id).execute()
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to resubmit documents. Please try again.",
+            )
+        finally:
+            try:
+                supabase.auth.admin.sign_out(access_token)
+            except Exception as e:
+                logger.error(f"Failed to invalidate temporary resubmission token: {e}")
 
     # ------------------------------------------------------------------
     # Registration (profile completion after OTP)
@@ -333,7 +886,9 @@ class AuthService:
 
         # 1. Confirm user has a completed account in public.users
         try:
-            user_check = supabase.table("users").select("id, email").eq("email", email).execute()
+            user_check = supabase.table("users").select(
+                "id, email, verification_status, verification_rejection_reason"
+            ).eq("email", email).execute()
             if not user_check.data:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email. Please sign up first.")
         except HTTPException:
@@ -358,6 +913,19 @@ class AuthService:
 
         user_id = str(auth_response.user.id)
         access_token = auth_response.session.access_token
+        user_row = user_check.data[0]
+        verification_status = user_row.get("verification_status") or "approved"
+
+        if verification_status != "approved":
+            try:
+                supabase.auth.admin.sign_out(access_token)
+            except Exception as e:
+                logger.error(f"Failed to invalidate blocked login token for {email}: {e}")
+
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=self._build_review_error_detail(user_row),
+            )
 
         # 3. Update device_id → kicks out old device (it gets 403 on next request)
         try:
@@ -681,36 +1249,7 @@ class AuthService:
             )
 
         # 4. Whitelist domain check (BLOCKING)
-        supabase = get_supabase_client()
-        if not supabase:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Database connection error"
-            )
-
-        try:
-            domain_result = (
-                supabase.table("university_domains")
-                .select("university_name")
-                .eq("domain", domain)
-                .eq("is_active", True)
-                .execute()
-            )
-        except Exception as e:
-            logger.error(f"University domain lookup error: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to verify university domain"
-            )
-
-        if not domain_result.data:
-            logger.warning(f"Unsupported university domain: {domain} (email: {email})")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Your university is not supported yet. Only verified UAE university email domains are accepted."
-            )
-
-        university_name = domain_result.data[0]["university_name"]
+        university_name = self._lookup_verified_university(email)
 
         return auth_user, email, domain, university_name
 
@@ -788,7 +1327,9 @@ class AuthService:
             supabase.table("users").insert({
                 "id": user_id,
                 "email": email,
-                "account_type": "free"
+                "account_type": "free",
+                "verification_status": "approved",
+                "signup_method": "azure_oauth",
             }).execute()
             logger.info(f"Created user in public.users via Microsoft OAuth: {email}")
         except Exception as e:
@@ -862,6 +1403,109 @@ class AuthService:
         return {
             "email": email,
             "reset_token": reset_token
+        }
+
+    # ------------------------------------------------------------------
+    # Internal admin review actions
+    # ------------------------------------------------------------------
+
+    async def approve_verification_submission(self, submission_id: str, reviewer: str) -> Dict[str, Any]:
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        submission_result = supabase.table("user_verification_submissions").select(
+            "id, user_id, status, users!inner(email)"
+        ).eq("id", submission_id).execute()
+
+        if not submission_result.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Verification submission not found.")
+
+        submission = submission_result.data[0]
+        if submission.get("status") != "pending_review":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This verification submission has already been reviewed.",
+            )
+
+        reviewed_at = datetime.now(timezone.utc).isoformat()
+        user_id = submission["user_id"]
+        related_user = submission.get("users")
+        user_email = related_user[0]["email"] if isinstance(related_user, list) else related_user["email"]
+
+        supabase.table("user_verification_submissions").update({
+            "status": "approved",
+            "reviewed_by": reviewer,
+            "reviewed_at": reviewed_at,
+            "rejection_reason": None,
+        }).eq("id", submission_id).execute()
+
+        supabase.table("users").update({
+            "verification_status": "approved",
+            "verification_reviewed_at": reviewed_at,
+            "verification_reviewed_by": reviewer,
+            "verification_rejection_reason": None,
+        }).eq("id", user_id).execute()
+
+        self._send_review_email(email_service.send_review_approved_email, user_email)
+
+        return {
+            "submission_id": submission_id,
+            "user_id": user_id,
+            "verification_status": "approved",
+        }
+
+    async def reject_verification_submission(self, submission_id: str, reviewer: str, reason: str) -> Dict[str, Any]:
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        submission_result = supabase.table("user_verification_submissions").select(
+            "id, user_id, status, users!inner(email)"
+        ).eq("id", submission_id).execute()
+
+        if not submission_result.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Verification submission not found.")
+
+        submission = submission_result.data[0]
+        if submission.get("status") != "pending_review":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This verification submission has already been reviewed.",
+            )
+
+        reviewed_at = datetime.now(timezone.utc).isoformat()
+        user_id = submission["user_id"]
+        related_user = submission.get("users")
+        user_email = related_user[0]["email"] if isinstance(related_user, list) else related_user["email"]
+
+        supabase.table("user_verification_submissions").update({
+            "status": "rejected",
+            "reviewed_by": reviewer,
+            "reviewed_at": reviewed_at,
+            "rejection_reason": reason,
+        }).eq("id", submission_id).execute()
+
+        supabase.table("users").update({
+            "verification_status": "rejected",
+            "verification_reviewed_at": reviewed_at,
+            "verification_reviewed_by": reviewer,
+            "verification_rejection_reason": reason,
+        }).eq("id", user_id).execute()
+
+        self._send_review_email(email_service.send_review_rejected_email, user_email, reason)
+
+        return {
+            "submission_id": submission_id,
+            "user_id": user_id,
+            "verification_status": "rejected",
+            "review_reason": reason,
         }
 
 

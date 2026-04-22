@@ -74,6 +74,17 @@ async def get_current_user(
                 )
             
             user = user_result.data[0]
+            verification_status = user.get("verification_status")
+            if verification_status and verification_status != "approved":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "ACCOUNT_PENDING_REVIEW" if verification_status == "pending_review" else "ACCOUNT_REJECTED",
+                        "message": "Your account is not approved for app access yet.",
+                        "verification_status": verification_status,
+                        "review_reason": user.get("verification_rejection_reason"),
+                    }
+                )
             
             # --- Device Security Check ---
             device_id_header = request.headers.get("X-Device-ID")

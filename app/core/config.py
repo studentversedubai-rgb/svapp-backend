@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     SUPABASE_URL: str
     SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_KEY: str
+    VERIFICATION_BUCKET_NAME: str = "user-verification-documents"
     
     # ================================
     # JWT
@@ -50,6 +51,8 @@ class Settings(BaseSettings):
     # ================================
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_PER_MINUTE: int = 60
+    MAX_UPLOAD_SIZE_BYTES: int = 26214400
+    VERIFICATION_FILE_MAX_BYTES: int = 10485760
     
     # ================================
     # EMAIL VALIDATION
@@ -73,6 +76,8 @@ class Settings(BaseSettings):
     # ================================
     RESEND_API_KEY: str = ""
     RESEND_FROM: str = "auth@loginotp.studentverse.app"
+    POSTMARK_API_KEY: str = ""
+    REVIEW_FROM_ADDRESS: str = "register@studentverse.app"
     
     # ================================
     # SV ORBIT
@@ -91,6 +96,11 @@ class Settings(BaseSettings):
     # ================================
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
+
+    # ================================
+    # INTERNAL ADMIN API
+    # ================================
+    ADMIN_API_TOKEN: str = ""
     
     class Config:
         env_file = ".env"

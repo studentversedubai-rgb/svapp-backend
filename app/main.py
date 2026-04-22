@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.redis import redis_manager
 from app.modules.auth.router import router as auth_router
+from app.modules.admin.router import router as admin_router
 from app.modules.offers.router import router as offers_router
 from app.modules.orbit.router import router as orbit_router
 from app.modules.entitlements.router import router as entitlements_router
@@ -86,7 +87,7 @@ def create_app() -> FastAPI:
     # ================================
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RateLimitMiddleware)
-    app.add_middleware(RequestSizeLimitMiddleware, max_upload_size=1048576) # 1MB limit
+    app.add_middleware(RequestSizeLimitMiddleware, max_upload_size=settings_obj.MAX_UPLOAD_SIZE_BYTES)
     app.add_middleware(LoggingMiddleware)
 
     # ================================
@@ -148,6 +149,7 @@ def create_app() -> FastAPI:
     # Register Routers
     # ================================
     app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
+    app.include_router(admin_router, prefix="/admin", tags=["Internal Admin"])
     app.include_router(offers_router, prefix="/offers", tags=["Offers"])
     app.include_router(orbit_router, prefix="/orbit", tags=["Orbit AI"])
     app.include_router(entitlements_router, prefix="/entitlements", tags=["Entitlements"])
