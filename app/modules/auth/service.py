@@ -53,6 +53,31 @@ class AuthService:
             detail="Failed to create account. Please try again.",
         )
 
+    def _find_auth_user_id_by_email(self, supabase: Any, email: str) -> Optional[str]:
+        """Paginate supabase auth admin users to locate an existing user_id by email."""
+        target = email.strip().lower()
+        try:
+            page = 1
+            per_page = 200
+            while True:
+                result = supabase.auth.admin.list_users(page=page, per_page=per_page)
+                users = result if isinstance(result, list) else getattr(result, "users", None) or []
+                if not users:
+                    return None
+                for u in users:
+                    u_email = (getattr(u, "email", None) or (u.get("email") if isinstance(u, dict) else None) or "").lower()
+                    if u_email == target:
+                        u_id = getattr(u, "id", None) or (u.get("id") if isinstance(u, dict) else None)
+                        return str(u_id) if u_id else None
+                if len(users) < per_page:
+                    return None
+                page += 1
+                if page > 50:  # safety cap
+                    return None
+        except Exception as e:
+            logger.error(f"Auth user lookup by email failed for {target}: {e}")
+            return None
+
     def _build_review_error_detail(self, user: Dict[str, Any]) -> Dict[str, Any]:
         verification_status = user.get("verification_status") or "pending_review"
         reason = user.get("verification_rejection_reason")
@@ -546,22 +571,57 @@ class AuthService:
         uploaded_paths: list[str] = []
 
         try:
-            auth_response = supabase.auth.admin.create_user({
-                "email": normalized_email,
-                "password": password,
-                "email_confirm": True,
-                "user_metadata": {
-                    "signup_method": "manual_review",
-                },
-            })
-            auth_user = getattr(auth_response, "user", None) or getattr(auth_response, "data", None)
-            if not auth_user:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create account. Please try again.",
-                )
-
-            user_id = self._extract_auth_user_id(auth_user)
+            try:
+                auth_response = supabase.auth.admin.create_user({
+                    "email": normalized_email,
+                    "password": password,
+                    "email_confirm": True,
+                    "user_metadata": {
+                        "signup_method": "manual_review",
+                    },
+                })
+                auth_user = getattr(auth_response, "user", None) or getattr(auth_response, "data", None)
+                if not auth_user:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to create account. Please try again.",
+                    )
+                user_id = self._extract_auth_user_id(auth_user)
+            except HTTPException:
+                raise
+            except Exception as create_err:
+                err_msg = str(create_err).lower()
+                if "already been registered" in err_msg or "already registered" in err_msg or "already exists" in err_msg:
+                    # We already confirmed public.users has no row for this email above,
+                    # so any auth.users record is an orphan from a prior failed attempt.
+                    # Adopt it: reset password, reuse user_id, continue signup.
+                    orphan_id = self._find_auth_user_id_by_email(supabase, normalized_email)
+                    if not orphan_id:
+                        logger.error(
+                            f"Auth reports {normalized_email} exists but list_users could not locate it"
+                        )
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="An account with this email already exists. Please use the login screen or contact support.",
+                        )
+                    try:
+                        supabase.auth.admin.update_user_by_id(
+                            orphan_id,
+                            {"password": password, "email_confirm": True},
+                        )
+                    except Exception as upd_err:
+                        logger.error(f"Failed to adopt orphan auth user {orphan_id}: {upd_err}")
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to submit account for review. Please try again.",
+                        )
+                    logger.warning(
+                        f"Adopted orphan auth.users record for {normalized_email} (id={orphan_id})"
+                    )
+                    auth_user = {"id": orphan_id, "email": normalized_email}
+                    user_id = orphan_id
+                else:
+                    raise
 
             self._insert_user_row_for_signup(
                 user_id=user_id,
