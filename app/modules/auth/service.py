@@ -579,6 +579,291 @@ class AuthService:
 
         logger.info(f"Account permanently deleted: {user_id} ({email})")
 
+    # ------------------------------------------------------------------
+    # Microsoft OAuth Verification (sign-up + forgot-password)
+    # ------------------------------------------------------------------
+
+    async def list_verified_institutions(self) -> list:
+        """Return list of active verified universities for frontend dropdown."""
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
+        try:
+            result = (
+                supabase.table("university_domains")
+                .select("university_name, domain")
+                .eq("is_active", True)
+                .order("university_name")
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Failed to fetch institutions: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to load institutions"
+            )
+
+    def _validate_azure_token(self, access_token: str):
+        """
+        Validate a Supabase Azure OAuth token and return the authenticated user.
+
+        Returns (auth_user, email, domain, university_name) tuple.
+
+        Raises HTTPException on any validation failure.
+        """
+        # 1. Validate token with a fresh client
+        fresh = create_fresh_supabase_client()
+        if not fresh:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
+        try:
+            auth_response = fresh.auth.get_user(access_token)
+        except Exception as e:
+            logger.error(f"Azure token validation failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired authentication session"
+            )
+
+        if not auth_response or not auth_response.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired authentication session"
+            )
+
+        auth_user = auth_response.user
+
+        # 2. Confirm provider is Azure
+        provider = None
+        if auth_user.app_metadata:
+            provider = auth_user.app_metadata.get("provider")
+        # Also check identities array as fallback
+        if not provider and auth_user.identities:
+            for identity in auth_user.identities:
+                if hasattr(identity, 'provider'):
+                    provider = identity.provider
+                    break
+                elif isinstance(identity, dict):
+                    provider = identity.get("provider")
+                    break
+
+        if provider != "azure":
+            logger.warning(f"Non-Azure provider attempted: {provider}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid authentication provider. Please sign in with your Microsoft university account."
+            )
+
+        # 3. Extract and normalize email (from Supabase, NOT from request body)
+        email = auth_user.email
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No email found in authentication session"
+            )
+
+        email = email.lower().strip()
+
+        try:
+            domain = email.split("@")[1]
+        except IndexError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid email format"
+            )
+
+        # 4. Whitelist domain check (BLOCKING)
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
+        try:
+            domain_result = (
+                supabase.table("university_domains")
+                .select("university_name")
+                .eq("domain", domain)
+                .eq("is_active", True)
+                .execute()
+            )
+        except Exception as e:
+            logger.error(f"University domain lookup error: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to verify university domain"
+            )
+
+        if not domain_result.data:
+            logger.warning(f"Unsupported university domain: {domain} (email: {email})")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your university is not supported yet. Only verified UAE university email domains are accepted."
+            )
+
+        university_name = domain_result.data[0]["university_name"]
+
+        return auth_user, email, domain, university_name
+
+    async def verify_microsoft_signup(self, access_token: str) -> Dict[str, Any]:
+        """
+        Verify Microsoft Azure OAuth session for new user sign-up.
+
+        This replaces verify_otp() as the identity gate for sign-up:
+        1. Validates Azure OAuth token
+        2. Confirms provider is Azure
+        3. Extracts email from token (NOT from request body)
+        4. Validates email domain against university whitelist (BLOCKING)
+        5. Rejects if account already exists
+        6. Creates Supabase Auth user + public.users row
+        7. Returns access token for registration completion
+        """
+        auth_user, email, domain, university_name = self._validate_azure_token(access_token)
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
+        # 5. Reject if account already exists in public.users
+        try:
+            existing = supabase.table("users").select("id").eq("email", email).execute()
+            if existing.data:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An account with this email already exists. Please use the login screen."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"User existence check failed: {e}")
+
+        # 6. Create Supabase Auth user + public.users row
+        #    (same pattern as verify_otp)
+        auth_client = create_fresh_supabase_client()
+        if not auth_client:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
+        temp_password = secrets.token_urlsafe(32)
+        try:
+            signup_response = auth_client.auth.sign_up({"email": email, "password": temp_password})
+        except Exception as e:
+            logger.error(f"Supabase sign_up failed for Microsoft user: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create account. Please try again."
+            )
+
+        if not signup_response or not signup_response.user:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create account"
+            )
+
+        if not signup_response.session or not signup_response.session.access_token:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Account created but no session returned. Ensure email confirmation is disabled in Supabase."
+            )
+
+        user_id = str(signup_response.user.id)
+        new_access_token = signup_response.session.access_token
+
+        # Insert into public.users
+        try:
+            supabase.table("users").insert({
+                "id": user_id,
+                "email": email,
+                "account_type": "free"
+            }).execute()
+            logger.info(f"Created user in public.users via Microsoft OAuth: {email}")
+        except Exception as e:
+            logger.error(f"Failed to insert user into public.users: {e}")
+            # Roll back the Supabase Auth user so it's not orphaned
+            try:
+                supabase.auth.admin.delete_user(user_id)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create user profile. Please try again."
+            )
+
+        logger.info(f"Microsoft OAuth signup verified: {email} ({university_name})")
+
+        return {
+            "status": "success",
+            "message": "Microsoft verification successful. Please complete your registration.",
+            "email": email,
+            "university_name": university_name,
+            "is_new_user": True,
+            "access_token": new_access_token,
+            "token_type": "bearer",
+            "user": {"id": user_id, "email": email}
+        }
+
+    async def verify_microsoft_recovery(self, access_token: str) -> Dict[str, Any]:
+        """
+        Verify Microsoft Azure OAuth session for password recovery.
+
+        1. Validates Azure OAuth token
+        2. Confirms provider is Azure
+        3. Extracts email from token
+        4. Validates email domain against university whitelist
+        5. Confirms completed account exists in public.users
+        6. Issues short-lived reset token (same pattern as forgot_password_verify_otp)
+        """
+        auth_user, email, domain, university_name = self._validate_azure_token(access_token)
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error"
+            )
+
+        # 5. Confirm completed account exists
+        try:
+            user_check = supabase.table("users").select("id").eq("email", email).execute()
+            if not user_check.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No account found with this email."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"User lookup failed during Microsoft recovery: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error during recovery verification"
+            )
+
+        # 6. Issue short-lived reset token (same pattern as forgot_password_verify_otp)
+        reset_token = str(uuid.uuid4())
+        redis_manager.setex(f"sv:app:auth:reset_token:{email}", 600, reset_token)
+
+        logger.info(f"Microsoft OAuth recovery verified: {email}")
+
+        return {
+            "email": email,
+            "reset_token": reset_token
+        }
+
 
 # Singleton instance
 auth_service = AuthService()

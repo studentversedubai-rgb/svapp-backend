@@ -199,3 +199,28 @@ class AnalyticsResponse(BaseModel):
     """Response for analytics"""
     ok: bool = True
     data: UserStats
+
+
+# ------------------------------------------------------------------
+# Microsoft OAuth Verification Schemas
+# ------------------------------------------------------------------
+
+class InstitutionItem(BaseModel):
+    """Single university entry for the institutions list."""
+    university_name: str = Field(..., description="Official university name")
+    domain: str = Field(..., description="Accepted email domain")
+
+class InstitutionsListResponse(BaseModel):
+    """Response for GET /auth/institutions"""
+    ok: bool = True
+    data: list = Field(default_factory=list, description="List of supported institutions")
+
+class MicrosoftSignupVerifyResponse(BaseModel):
+    """Response for POST /auth/signup/verify-microsoft"""
+    ok: bool = True
+    data: Dict[str, Any] = Field(..., description="Verified email, university, access token")
+
+class MicrosoftRecoveryVerifyResponse(BaseModel):
+    """Response for POST /auth/forgot-password/verify-microsoft"""
+    ok: bool = True
+    data: Dict[str, Any] = Field(..., description="Email and short-lived reset token")

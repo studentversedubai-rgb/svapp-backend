@@ -190,3 +190,62 @@ async def delete_account(
     """
     await auth_service.delete_account(current_user["id"], access_token=credentials.credentials)
     return {"ok": True, "data": {"message": "Account permanently deleted"}}
+
+
+# ------------------------------------------------------------------
+# Microsoft OAuth Verification Routes
+# ------------------------------------------------------------------
+
+@router.get("/institutions")
+async def list_institutions():
+    """
+    Return list of supported universities for frontend dropdown.
+
+    Public endpoint — no authentication required.
+    Source of truth replaces hardcoded frontend university list.
+    """
+    result = await auth_service.list_verified_institutions()
+    return {"ok": True, "data": result}
+
+
+@router.post("/signup/verify-microsoft")
+async def verify_microsoft_signup(
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+):
+    """
+    Verify Microsoft Azure OAuth session for new user sign-up.
+
+    Expects: Bearer token from Supabase Azure OAuth session in Authorization header.
+    No request body — the email is derived from the authenticated token, not client input.
+
+    Returns: verified email, university name, and access token for registration completion.
+
+    Error responses:
+    - 400: unsupported university domain or invalid provider
+    - 401: invalid or expired Azure session
+    - 409: account with this email already exists
+    """
+    result = await auth_service.verify_microsoft_signup(credentials.credentials)
+    return {"ok": True, "data": result}
+
+
+@router.post("/forgot-password/verify-microsoft")
+async def verify_microsoft_recovery(
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
+):
+    """
+    Verify Microsoft Azure OAuth session for password recovery.
+
+    Expects: Bearer token from Supabase Azure OAuth session in Authorization header.
+    No request body — the email is derived from the authenticated token.
+
+    Returns: email and a short-lived reset token (10 min TTL).
+    The reset token is used with the existing POST /auth/forgot-password/reset endpoint.
+
+    Error responses:
+    - 400: unsupported university domain or invalid provider
+    - 401: invalid or expired Azure session
+    - 404: no account found with this email
+    """
+    result = await auth_service.verify_microsoft_recovery(credentials.credentials)
+    return {"ok": True, "data": result}

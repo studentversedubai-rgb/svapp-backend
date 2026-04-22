@@ -278,7 +278,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path in ["/docs", "/redoc", "/openapi.json", "/health", "/"]:
             return await call_next(request)
             
-        is_auth_strict = path.startswith("/auth/send-otp") or path.startswith("/auth/verify-otp") or path.startswith("/auth/login")
+        is_auth_strict = path.startswith("/auth/send-otp") or path.startswith("/auth/verify-otp") or path.startswith("/auth/login") or path.startswith("/auth/signup/verify-microsoft") or path.startswith("/auth/forgot-password/verify-microsoft")
             
         is_payment = path.startswith("/payments")
         

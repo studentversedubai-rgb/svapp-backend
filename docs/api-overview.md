@@ -24,6 +24,17 @@ User authentication and profile management.
 - `GET /auth/me` - Get current user profile
 - `PUT /auth/profile` - Update user profile
 
+**Microsoft OAuth Verification (Azure):**
+- `GET /auth/institutions` - List verified universities. Returns `university_name` and `domain` for each. **Public.**
+- `POST /auth/signup/verify-microsoft` - Verify Azure OAuth session for sign-up. Validates provider is Azure, checks email domain against `university_domains` whitelist, creates Supabase Auth user + `public.users` row. Returns access token for registration. **Requires Azure Bearer token.**
+- `POST /auth/forgot-password/verify-microsoft` - Verify Azure OAuth session for password recovery. Validates the user exists, issues a short-lived reset token (10 min TTL) compatible with `POST /auth/forgot-password/reset`. **Requires Azure Bearer token.**
+
+**Notes (Microsoft OAuth):**
+- The Bearer token for `/signup/verify-microsoft` and `/forgot-password/verify-microsoft` is the Supabase Azure OAuth session token — NOT the app's regular JWT
+- Email is extracted server-side from the Azure token; there is no email in the request body
+- Domain validation is strict exact-match against the `university_domains` table
+- Existing OTP endpoints remain functional as a rollback path
+
 ### 2. Offers (`/offers`)
 Browse and search student offers.
 
@@ -119,6 +130,7 @@ Stripe payment processing and CSV export for ticket bookings.
 
 ## Rate Limiting
 - **Default**: 60 requests per minute per IP
+- **Auth strict** (5 req/min/IP): `/auth/send-otp`, `/auth/verify-otp`, `/auth/login`, `/auth/signup/verify-microsoft`, `/auth/forgot-password/verify-microsoft`
 - **Orbit Chat**: 150 messages per day per user
 
 ---
