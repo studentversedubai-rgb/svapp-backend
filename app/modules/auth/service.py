@@ -90,6 +90,17 @@ class AuthService:
         verification_status = user.get("verification_status") or "pending_review"
         reason = user.get("verification_rejection_reason")
 
+        if verification_status == "suspended":
+            return {
+                "code": "ACCOUNT_SUSPENDED",
+                "message": (
+                    "Your account was suspended due to repeated rejections. "
+                    "Please email support@studentverse.ae to rectify this."
+                ),
+                "verification_status": "suspended",
+                "review_reason": reason,
+            }
+
         if verification_status == "rejected":
             return {
                 "code": "ACCOUNT_REJECTED",
@@ -551,20 +562,54 @@ class AuthService:
         if not supabase:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
+        blacklist = supabase.table("user_blacklist").select("email").eq("email", normalized_email).execute()
+        if blacklist.data:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "ACCOUNT_SUSPENDED",
+                    "message": (
+                        "Your account was suspended due to repeated rejections. "
+                        "Please email support@studentverse.ae to rectify this."
+                    ),
+                    "verification_status": "suspended",
+                },
+            )
+
         existing = supabase.table("users").select(
             "id, verification_status"
         ).eq("email", normalized_email).execute()
         if existing.data:
             existing_status = existing.data[0].get("verification_status") or "approved"
+            if existing_status == "suspended":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "code": "ACCOUNT_SUSPENDED",
+                        "message": (
+                            "Your account was suspended due to repeated rejections. "
+                            "Please email support@studentverse.ae to rectify this."
+                        ),
+                        "verification_status": "suspended",
+                    },
+                )
             if existing_status == "pending_review":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Your account is already under review.",
+                    detail={
+                        "code": "ACCOUNT_PENDING_REVIEW",
+                        "message": "Your account is already under review.",
+                        "verification_status": "pending_review",
+                    },
                 )
             if existing_status == "rejected":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Your account was rejected. Please resubmit your documents instead.",
+                    detail={
+                        "code": "ACCOUNT_REJECTED",
+                        "message": "Your account was rejected. Please resubmit your documents instead.",
+                        "verification_status": "rejected",
+                    },
                 )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
