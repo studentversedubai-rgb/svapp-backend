@@ -46,6 +46,21 @@ CREATE TABLE IF NOT EXISTS public.user_verification_submissions (
   created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
+-- Backfill for databases where the table already existed before this migration
+-- (CREATE TABLE IF NOT EXISTS is a no-op on pre-existing tables, so column
+-- additions must be applied separately).
+ALTER TABLE public.user_verification_submissions
+  ADD COLUMN IF NOT EXISTS enrollment_document_path text,
+  ADD COLUMN IF NOT EXISTS enrollment_document_name text,
+  ADD COLUMN IF NOT EXISTS student_id_document_path text,
+  ADD COLUMN IF NOT EXISTS student_id_document_name text,
+  ADD COLUMN IF NOT EXISTS rejection_reason text,
+  ADD COLUMN IF NOT EXISTS reviewed_by text,
+  ADD COLUMN IF NOT EXISTS reviewed_at timestamptz,
+  ADD COLUMN IF NOT EXISTS submitted_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now());
+
+NOTIFY pgrst, 'reload schema';
+
 CREATE INDEX IF NOT EXISTS idx_user_verification_submissions_user_id
   ON public.user_verification_submissions (user_id);
 

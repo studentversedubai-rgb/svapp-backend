@@ -142,6 +142,48 @@ async def get_current_user(
         )
 
 
+async def get_optional_user(request: Request) -> Optional[Dict]:
+    """
+    Optional auth dependency. Returns the user dict when a valid Bearer token
+    is supplied, otherwise None. Never raises for missing/invalid tokens.
+
+    Used for read-only endpoints that should be accessible to guests but may
+    still want to personalize responses when a user IS signed in.
+    """
+    auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return None
+
+    token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return None
+
+    supabase = get_supabase_client()
+    if not supabase:
+        return None
+
+    try:
+        fresh = create_fresh_supabase_client()
+        auth_response = fresh.auth.get_user(token)
+        if not auth_response.user:
+            return None
+
+        user_id = auth_response.user.id
+        user_result = supabase.table("users").select("*").eq("id", user_id).execute()
+        if not user_result.data:
+            return None
+
+        user = user_result.data[0]
+        verification_status = user.get("verification_status")
+        if verification_status and verification_status != "approved":
+            return None
+
+        return user
+    except Exception as e:
+        logger.warning(f"get_optional_user: token validation failed, treating as guest: {e}")
+        return None
+
+
 async def get_current_user_no_device_check(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Dict:

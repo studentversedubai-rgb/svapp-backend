@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer
 
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_optional_user
 from app.modules.online_deals.service import OnlineDealService
 from app.modules.online_deals.schemas import (
     PaginatedOnlineDealsResponse,
@@ -52,7 +52,7 @@ async def get_online_deals(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     category: Optional[str] = Query(None, description="Filter by category"),
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_user),
     deal_service: OnlineDealService = Depends(get_online_deal_service)
 ):
     """
@@ -134,7 +134,7 @@ async def get_online_deals(
 )
 async def get_online_deal_by_id(
     deal_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_user),
     deal_service: OnlineDealService = Depends(get_online_deal_service)
 ):
     """

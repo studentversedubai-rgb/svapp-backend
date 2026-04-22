@@ -142,7 +142,7 @@ class OfferService:
     
     async def get_home_feed(
         self,
-        user_id: str,
+        user_id: Optional[str] = None,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
         page: int = 1,
@@ -263,7 +263,7 @@ class OfferService:
     
     async def search_offers(
         self,
-        user_id: str,
+        user_id: Optional[str] = None,
         query: Optional[str] = None,
         category_id: Optional[str] = None,
         latitude: Optional[float] = None,
@@ -403,7 +403,7 @@ class OfferService:
     
     async def get_nearby_offers(
         self,
-        user_id: str,
+        user_id: Optional[str],
         latitude: float,
         longitude: float,
         radius_km: float = 5.0,
@@ -446,7 +446,7 @@ class OfferService:
     
     async def get_offer_detail(
         self,
-        user_id: str,
+        user_id: Optional[str],
         offer_id: str,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None

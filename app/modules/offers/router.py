@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer
 
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_optional_user
 from app.modules.offers.service import OfferService
 from app.modules.offers.schemas import (
     PaginatedOffersResponse,
@@ -54,7 +54,7 @@ async def get_home_feed(
     longitude: Optional[float] = Query(None, ge=-180, le=180, description="User longitude"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_user),
     offer_service: OfferService = Depends(get_offer_service)
 ):
     """
@@ -90,9 +90,9 @@ async def get_home_feed(
                 detail="Both latitude and longitude must be provided together"
             )
         
-        # Get user ID from JWT (NEVER from request)
-        user_id = current_user['id']
-        
+        # Get user ID from JWT when present; None for guest callers
+        user_id = current_user['id'] if current_user else None
+
         # Fetch home feed
         result = await offer_service.get_home_feed(
             user_id=user_id,
@@ -132,7 +132,7 @@ async def search_offers(
     radius_km: Optional[float] = Query(None, ge=0, le=50, description="Search radius in km (max 50)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_user),
     offer_service: OfferService = Depends(get_offer_service)
 ):
     """
@@ -189,9 +189,9 @@ async def search_offers(
                     detail="Search query must be at least 2 characters"
                 )
         
-        # Get user ID from JWT
-        user_id = current_user['id']
-        
+        # Get user ID from JWT when present; None for guest callers
+        user_id = current_user['id'] if current_user else None
+
         # Perform search
         result = await offer_service.search_offers(
             user_id=user_id,
@@ -233,7 +233,7 @@ async def get_nearby_offers(
     category_id: Optional[str] = Query(None, description="Filter by category ID"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_user),
     offer_service: OfferService = Depends(get_offer_service)
 ):
     """
@@ -261,9 +261,9 @@ async def get_nearby_offers(
         Paginated nearby offers sorted by distance
     """
     try:
-        # Get user ID from JWT
-        user_id = current_user['id']
-        
+        # Get user ID from JWT when present; None for guest callers
+        user_id = current_user['id'] if current_user else None
+
         # Fetch nearby offers
         result = await offer_service.get_nearby_offers(
             user_id=user_id,
@@ -301,7 +301,7 @@ async def get_offer_detail(
     offer_id: str,
     latitude: Optional[float] = Query(None, ge=-90, le=90, description="User latitude for distance"),
     longitude: Optional[float] = Query(None, ge=-180, le=180, description="User longitude for distance"),
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_user),
     offer_service: OfferService = Depends(get_offer_service)
 ):
     """
@@ -335,9 +335,9 @@ async def get_offer_detail(
                 detail="Both latitude and longitude must be provided together"
             )
         
-        # Get user ID from JWT
-        user_id = current_user['id']
-        
+        # Get user ID from JWT when present; None for guest callers
+        user_id = current_user['id'] if current_user else None
+
         # Fetch offer detail
         offer = await offer_service.get_offer_detail(
             user_id=user_id,
@@ -375,7 +375,7 @@ async def get_offer_detail(
     description="Get list of all active offer categories"
 )
 async def get_categories(
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_user),
     offer_service: OfferService = Depends(get_offer_service)
 ):
     """
