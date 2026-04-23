@@ -17,6 +17,7 @@ from app.modules.merchant.router import router as merchant_router
 from app.modules.tickets.router import router as tickets_router
 from app.modules.payments.router import router as payments_router
 from app.modules.online_deals.router import router as online_deals_router
+from app.modules.app_status.router import router as app_status_router
 from app.core.config import Settings
 from app.core.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware
 from app.core.ratelimit import RateLimitMiddleware
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(tickets_router, prefix="/tickets", tags=["Tickets"])
     app.include_router(payments_router, prefix="/payments", tags=["Payments"])
     app.include_router(online_deals_router, prefix="/api/v1/online-deals", tags=["online-deals"])
+    app.include_router(app_status_router, prefix="/app-status", tags=["App Status"])
     
     from app.modules.payments.router import webhook_router
     app.include_router(webhook_router, prefix="/stripe", tags=["Stripe Webhook"])
