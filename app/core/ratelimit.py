@@ -310,7 +310,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             limit, window, identifier = 10, 60, user_id or self._get_ip(request)
         else:
             if user_id:
-                limit, window, identifier = 60, 60, user_id
+                limit, window, identifier = 200, 60, user_id
             else:
                 limit, window, identifier = 30, 60, self._get_ip(request)
                 
