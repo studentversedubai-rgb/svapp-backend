@@ -1495,6 +1495,24 @@ class AuthService:
             update_data = request.model_dump(exclude_unset=True, by_alias=True)
             if not update_data:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "No fields to update")
+
+            # Keep the legacy `name` column in sync when first/last name are edited.
+            if ("first_name" in update_data or "last_name" in update_data) and "name" not in update_data:
+                existing = (
+                    supabase.table("users")
+                    .select("first_name, last_name")
+                    .eq("id", user_id)
+                    .single()
+                    .execute()
+                )
+                current_first = (existing.data or {}).get("first_name") or ""
+                current_last = (existing.data or {}).get("last_name") or ""
+                new_first = update_data.get("first_name", current_first) or ""
+                new_last = update_data.get("last_name", current_last) or ""
+                combined = f"{new_first} {new_last}".strip()
+                if combined:
+                    update_data["name"] = combined
+
             result = supabase.table("users").update(update_data).eq("id", user_id).execute()
             if not result.data:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")

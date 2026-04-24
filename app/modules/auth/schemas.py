@@ -147,15 +147,17 @@ class RegisterRequest(BaseModel):
 class ProfileUpdateRequest(BaseModel):
     """Request to update allowed profile fields"""
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
-    
-    name: Optional[str] = Field(None, min_length=2, max_length=100, description="Full name")
+
+    first_name: Optional[str] = Field(None, min_length=1, max_length=60, description="First name")
+    last_name: Optional[str] = Field(None, min_length=1, max_length=60, description="Last name")
+    name: Optional[str] = Field(None, min_length=2, max_length=100, description="Full name (legacy)")
     student_id: Optional[str] = Field(None, min_length=3, max_length=30, description="Student ID")
     university: Optional[str] = Field(None, max_length=150, description="University name")
     nationality: Optional[str] = Field(None, max_length=60, description="Nationality")
     phone_number: Optional[str] = Field(None, max_length=20, description="Phone number")
     profile_picture_url: Optional[str] = Field(None, alias="avatar_url", description="Profile picture URL")
-    
-    @field_validator("name", "nationality", "university", "student_id", mode="before")
+
+    @field_validator("first_name", "last_name", "name", "nationality", "university", "student_id", mode="before")
     @classmethod
     def strip_html_and_scripts(cls, v: Optional[str]) -> Optional[str]:
         if v and isinstance(v, str):
