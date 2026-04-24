@@ -7,7 +7,7 @@ Handles OTP-based authentication and Profile Management.
 from fastapi import APIRouter, HTTPException, status, Depends, Request, Form, File, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.modules.auth.schemas import (
-    SendOTPRequest, 
+    SendOTPRequest,
     VerifyOTPRequest,
     RegisterRequest,
     ProfileUpdateRequest,
@@ -18,6 +18,8 @@ from app.modules.auth.schemas import (
     AnalyticsResponse,
     UserProfile,
     UserStats,
+    SendPersonalEmailOTPRequest,
+    VerifyPersonalEmailOTPRequest,
 )
 from app.modules.auth.service import auth_service
 from app.core.security import get_current_user, get_current_user_no_device_check
@@ -79,9 +81,34 @@ async def forgot_password_reset(request: ResetPasswordRequest):
     return {"ok": True, "data": result}
 
 
+@router.post("/signup/send-personal-email-otp")
+async def signup_send_personal_email_otp(request: SendPersonalEmailOTPRequest):
+    """
+    Sign-up step 1 → 2: send a 6-digit OTP to the applicant's personal email.
+    Public endpoint. Rejects university-domain addresses.
+    """
+    result = await auth_service.signup_send_personal_email_otp(request.personal_email)
+    return {"ok": True, "data": result}
+
+
+@router.post("/signup/verify-personal-email-otp")
+async def signup_verify_personal_email_otp(request: VerifyPersonalEmailOTPRequest):
+    """
+    Sign-up step 2: verify the OTP and mint a 15-minute signup_token that
+    must accompany the final /auth/manual-signup submission.
+    Public endpoint.
+    """
+    result = await auth_service.signup_verify_personal_email_otp(
+        request.personal_email, request.code
+    )
+    return {"ok": True, "data": result}
+
+
 @router.post("/manual-signup")
 async def manual_signup(
     email: str = Form(...),
+    personal_email: str = Form(...),
+    signup_token: str = Form(...),
     first_name: str = Form(...),
     last_name: str = Form(...),
     nationality: str = Form(""),
@@ -96,10 +123,14 @@ async def manual_signup(
     """
     Create a pending-review account with uploaded verification documents.
 
-    Public endpoint. Does not return an authenticated app session.
+    Public endpoint. Requires a valid signup_token obtained from
+    /auth/signup/verify-personal-email-otp (proves the personal email is
+    reachable). Does not return an authenticated app session.
     """
     result = await auth_service.manual_signup(
         email=email,
+        personal_email=personal_email,
+        signup_token=signup_token,
         first_name=first_name,
         last_name=last_name,
         nationality=nationality or None,
@@ -174,6 +205,38 @@ async def login(request_body: LoginRequest, request: Request):
     device_id = request.headers.get("X-Device-ID", "")
     result = await auth_service.login(request_body.email, request_body.password, device_id)
     return AuthResponse(data=result)
+
+
+@router.post("/personal-email/send-otp")
+async def personal_email_send_otp(
+    request: SendPersonalEmailOTPRequest,
+    current_user: Dict = Depends(get_current_user),
+):
+    """
+    Authenticated — powers the PersonalEmailRequiredScreen lockout.
+    Sends an OTP to the chosen personal email. The user is identified by
+    their JWT, not by the email in the body.
+    """
+    result = await auth_service.personal_email_send_otp(
+        current_user["id"], request.personal_email
+    )
+    return {"ok": True, "data": result}
+
+
+@router.post("/personal-email/verify-otp")
+async def personal_email_verify_otp(
+    request: VerifyPersonalEmailOTPRequest,
+    current_user: Dict = Depends(get_current_user),
+):
+    """
+    Authenticated — powers the PersonalEmailRequiredScreen lockout.
+    Verifies the OTP and persists personal_email + personal_email_verified_at
+    on public.users. After this the mobile lockout unmounts automatically.
+    """
+    result = await auth_service.personal_email_verify_otp(
+        current_user["id"], request.personal_email, request.code
+    )
+    return {"ok": True, "data": result}
 
 
 @router.get("/me", response_model=ProfileResponse)

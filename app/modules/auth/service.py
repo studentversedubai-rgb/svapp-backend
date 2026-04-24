@@ -46,6 +46,8 @@ class AuthService:
         "image/jpeg": ".jpg",
         "image/png": ".png",
         "image/jpg": ".jpg",
+        "application/msword": ".doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     }
 
     def _normalize_email(self, email: str) -> str:
@@ -115,6 +117,59 @@ class AuthService:
             "verification_status": "pending_review",
             "review_reason": reason,
         }
+
+    def _resolve_user_by_any_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """
+        Look up a public.users row where either users.email OR users.personal_email
+        matches the supplied address. Returns the raw row dict or None.
+
+        Used by forgot-password so users can type either email they know.
+        """
+        normalized = self._normalize_email(email)
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+        try:
+            result = (
+                supabase.table("users")
+                .select("id, email, personal_email")
+                .or_(f"email.eq.{normalized},personal_email.eq.{normalized}")
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            logger.error(f"User resolve by any email failed for {normalized}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error",
+            )
+        return result.data[0] if result.data else None
+
+    def _domain_is_university(self, email: str) -> bool:
+        """True if the email's domain is registered in university_domains."""
+        try:
+            domain = self._normalize_email(email).split("@", 1)[1]
+        except IndexError:
+            return False
+        supabase = get_supabase_client()
+        if not supabase:
+            return False
+        try:
+            result = (
+                supabase.table("university_domains")
+                .select("domain")
+                .eq("domain", domain)
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            logger.error(f"Domain lookup failed for {domain}: {e}")
+            return False
+        return bool(result.data)
 
     def _lookup_verified_university(self, email: str) -> str:
         normalized_email = self._normalize_email(email)
@@ -193,7 +248,7 @@ class AuthService:
         if mime_type not in self.ALLOWED_VERIFICATION_MIME_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"{label} must be a PDF, JPG, or PNG file.",
+                detail=f"{label} must be a PDF, Word document (.doc/.docx), or image (JPG/PNG).",
             )
 
         data = await upload.read()
@@ -284,6 +339,7 @@ class AuthService:
         age: int,
         signup_method: str,
         verification_status: str,
+        personal_email: Optional[str] = None,
     ) -> None:
         supabase = get_supabase_client()
         if not supabase:
@@ -310,6 +366,9 @@ class AuthService:
             "verification_submitted_at": datetime.now(timezone.utc).isoformat(),
             "signup_method": signup_method,
         }
+        if personal_email:
+            profile_data["personal_email"] = personal_email
+            profile_data["personal_email_verified_at"] = datetime.now(timezone.utc).isoformat()
 
         try:
             supabase.table("users").insert(profile_data).execute()
@@ -461,65 +520,304 @@ class AuthService:
     # ------------------------------------------------------------------
 
     async def forgot_password_send_otp(self, email: str) -> Dict[str, str]:
-        """Send OTP for forgot password. Verifies the user exists first."""
-        supabase = get_supabase_client()
-        if not supabase:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
+        """
+        Forgot password: route OTP to the user's personal_email.
 
-        existing = supabase.table("users").select("id").eq("email", email).execute()
-        if not existing.data:
+        The client may type either their university email or their personal
+        email — we look up the row by either column. The OTP is ALWAYS sent
+        to personal_email (university inboxes reject transactional mail).
+        If the row has no personal_email yet, return a 409 so the client can
+        route the user to the in-app lockout flow to add one first.
+        """
+        user = self._resolve_user_by_any_email(email)
+        if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No account found with this email."
+                detail="No account found with this email.",
             )
 
-        # Uses the exact same send_otp logic to generate and send
-        return await self.send_otp(email)
+        personal_email = (user.get("personal_email") or "").strip().lower()
+        if not personal_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "personal_email_required",
+                    "message": "Please log in and add a personal email before resetting your password.",
+                },
+            )
+
+        user_id = str(user["id"])
+        otp_code = "".join(random.choices(string.digits, k=6))
+        redis_key = f"sv:app:auth:forgot_otp:{user_id}"
+        if not redis_manager.setex(redis_key, 300, otp_code):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate verification code",
+            )
+
+        try:
+            email_service.send_otp_email(personal_email, otp_code, expiry_minutes=5)
+        except Exception as e:
+            redis_manager.delete(redis_key)
+            logger.error(f"Failed to send forgot-password OTP to {personal_email}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification code",
+            )
+
+        # Masked echo so the client can show "sent to j***@gmail.com"
+        local, _, domain = personal_email.partition("@")
+        masked = f"{local[0]}{'*' * max(1, len(local) - 1)}@{domain}" if local else personal_email
+        return {"message": "OTP sent", "sent_to": masked}
 
     async def forgot_password_verify_otp(self, email: str, code: str) -> Dict[str, Any]:
         """Verify OTP for forgot password and issue a temporary reset token."""
-        redis_key = f"sv:app:auth:otp:{email}"
+        user = self._resolve_user_by_any_email(email)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
+
+        user_id = str(user["id"])
+        redis_key = f"sv:app:auth:forgot_otp:{user_id}"
         stored_code = redis_manager.get(redis_key)
-        
+
         if not stored_code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
         if stored_code != code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
-        # Create a unique 10-minute reset token
         reset_token = str(uuid.uuid4())
-        redis_manager.setex(f"sv:app:auth:reset_token:{email}", 600, reset_token)
+        redis_manager.setex(f"sv:app:auth:reset_token:{user_id}", 600, reset_token)
         redis_manager.delete(redis_key)
 
         return {"reset_token": reset_token}
 
     async def forgot_password_reset(self, email: str, reset_token: str, new_password: str) -> Dict[str, Any]:
         """Use the temporary reset token to set a new password via Supabase Auth Admin API."""
-        token_key = f"sv:app:auth:reset_token:{email}"
+        user = self._resolve_user_by_any_email(email)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        user_id = str(user["id"])
+        token_key = f"sv:app:auth:reset_token:{user_id}"
         stored_token = redis_manager.get(token_key)
-        
+
         if not stored_token or stored_token != reset_token:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
-            
+
         supabase = get_supabase_client()
         if not supabase:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
-            
-        user_check = supabase.table("users").select("id").eq("email", email).execute()
-        if not user_check.data:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-            
-        user_id = str(user_check.data[0]["id"])
-        
+
         try:
             supabase.auth.admin.update_user_by_id(user_id, {"password": new_password})
             logger.info(f"Password reset successfully for user: {user_id}")
         except Exception as e:
             logger.error(f"Failed to reset password for user {user_id}: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to reset password")
-            
+
         redis_manager.delete(token_key)
         return {"message": "Password reset successfully"}
+
+    # ------------------------------------------------------------------
+    # Signup personal-email OTP (step 2 of the new sign-up flow)
+    # ------------------------------------------------------------------
+
+    async def signup_send_personal_email_otp(self, personal_email: str) -> Dict[str, str]:
+        """
+        Send a 6-digit OTP to the personal email supplied at sign-up step 1.
+
+        Rejects if the domain belongs to a known university (this is the
+        personal-email input, not the university-email input) or if the
+        address is already linked to a verified account.
+        """
+        normalized = self._normalize_email(personal_email)
+        if self._domain_is_university(normalized):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please use a personal email, not your university email.",
+            )
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        try:
+            existing = (
+                supabase.table("users")
+                .select("id")
+                .eq("personal_email", normalized)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This email is already linked to another account.",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Personal email duplicate check failed: {e}")
+
+        otp_code = "".join(random.choices(string.digits, k=6))
+        redis_key = f"sv:app:auth:signup_otp:{normalized}"
+        if not redis_manager.setex(redis_key, 300, otp_code):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate verification code",
+            )
+
+        try:
+            email_service.send_otp_email(normalized, otp_code, expiry_minutes=5)
+        except Exception as e:
+            redis_manager.delete(redis_key)
+            logger.error(f"Failed to send signup OTP to {normalized}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification code",
+            )
+
+        return {"message": "OTP sent"}
+
+    async def signup_verify_personal_email_otp(self, personal_email: str, code: str) -> Dict[str, Any]:
+        """Verify the signup OTP and issue a 15-minute signup token."""
+        normalized = self._normalize_email(personal_email)
+        redis_key = f"sv:app:auth:signup_otp:{normalized}"
+        stored_code = redis_manager.get(redis_key)
+        if not stored_code:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
+        if stored_code != code:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
+
+        signup_token = str(uuid.uuid4())
+        redis_manager.setex(f"sv:app:auth:signup_token:{normalized}", 900, signup_token)
+        redis_manager.delete(redis_key)
+        return {"signup_token": signup_token, "personal_email": normalized}
+
+    def _consume_signup_token(self, personal_email: str, signup_token: str) -> None:
+        """Validate and delete a signup token. Raises 401 if invalid."""
+        normalized = self._normalize_email(personal_email)
+        token_key = f"sv:app:auth:signup_token:{normalized}"
+        stored = redis_manager.get(token_key)
+        if not stored or stored != signup_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Signup session expired. Please verify your email again.",
+            )
+        redis_manager.delete(token_key)
+
+    # ------------------------------------------------------------------
+    # Personal email add/verify (authenticated — used by lockout screen)
+    # ------------------------------------------------------------------
+
+    async def personal_email_send_otp(self, user_id: str, personal_email: str) -> Dict[str, str]:
+        """
+        Send an OTP to a personal email so a logged-in user can attach it to
+        their account (powers the PersonalEmailRequiredScreen lockout).
+        """
+        normalized = self._normalize_email(personal_email)
+        if self._domain_is_university(normalized):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please use a personal email, not your university email.",
+            )
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        try:
+            existing = (
+                supabase.table("users")
+                .select("id")
+                .eq("personal_email", normalized)
+                .neq("id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This email is already linked to another account.",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Personal email duplicate check failed: {e}")
+
+        otp_code = "".join(random.choices(string.digits, k=6))
+        # Key by user_id so an attacker can't target arbitrary inboxes by swapping
+        # the personal_email; the OTP is always verified against the caller's id.
+        redis_key = f"sv:app:auth:personal_email_otp:{user_id}"
+        payload = f"{otp_code}|{normalized}"
+        if not redis_manager.setex(redis_key, 300, payload):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate verification code",
+            )
+
+        try:
+            email_service.send_otp_email(normalized, otp_code, expiry_minutes=5)
+        except Exception as e:
+            redis_manager.delete(redis_key)
+            logger.error(f"Failed to send personal-email OTP to {normalized}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification code",
+            )
+
+        return {"message": "OTP sent"}
+
+    async def personal_email_verify_otp(
+        self, user_id: str, personal_email: str, code: str
+    ) -> Dict[str, Any]:
+        """Verify the personal-email OTP and persist it on public.users."""
+        normalized = self._normalize_email(personal_email)
+        redis_key = f"sv:app:auth:personal_email_otp:{user_id}"
+        stored = redis_manager.get(redis_key)
+        if not stored:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
+
+        try:
+            stored_code, _, stored_email = stored.partition("|")
+        except Exception:
+            stored_code, stored_email = stored, ""
+
+        if stored_email != normalized:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email mismatch. Please request a new code.",
+            )
+        if stored_code != code:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
+
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database connection error",
+            )
+
+        try:
+            supabase.table("users").update({
+                "personal_email": normalized,
+                "personal_email_verified_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", user_id).execute()
+        except Exception as e:
+            logger.error(f"Failed to persist personal_email for user {user_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to save personal email. Please try again.",
+            )
+
+        redis_manager.delete(redis_key)
+        return {"personal_email": normalized, "message": "Personal email verified."}
 
     # ------------------------------------------------------------------
     # Manual Review Signup
@@ -529,6 +827,8 @@ class AuthService:
         self,
         *,
         email: str,
+        personal_email: str,
+        signup_token: str,
         first_name: str,
         last_name: str,
         nationality: Optional[str],
@@ -541,6 +841,18 @@ class AuthService:
         student_id_document: UploadFile,
     ) -> Dict[str, Any]:
         normalized_email = self._normalize_email(email)
+        normalized_personal_email = self._normalize_email(personal_email)
+
+        # Verify the personal-email signup token (proves the personal inbox is
+        # reachable) and consume it so the same token cannot be reused.
+        self._consume_signup_token(normalized_personal_email, signup_token)
+
+        if self._domain_is_university(normalized_personal_email):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Personal email must not be a university email.",
+            )
+
         canonical_university = self._lookup_verified_university(normalized_email)
         date_of_birth_iso, age = self._parse_date_of_birth(date_of_birth)
 
@@ -682,6 +994,7 @@ class AuthService:
                 age=age,
                 signup_method="manual_review",
                 verification_status="pending_review",
+                personal_email=normalized_personal_email,
             )
 
             submission_insert = supabase.table("user_verification_submissions").insert({
@@ -1327,9 +1640,14 @@ class AuthService:
         if email:
             try:
                 redis_manager.delete(f"sv:app:auth:otp:{email}")
-                redis_manager.delete(f"sv:app:auth:reset_token:{email}")
             except Exception as e:
                 logger.error(f"Failed to clean up Redis auth keys for {email}: {e}")
+        try:
+            redis_manager.delete(f"sv:app:auth:forgot_otp:{user_id}")
+            redis_manager.delete(f"sv:app:auth:reset_token:{user_id}")
+            redis_manager.delete(f"sv:app:auth:personal_email_otp:{user_id}")
+        except Exception as e:
+            logger.error(f"Failed to clean up Redis auth keys for user {user_id}: {e}")
 
         # Clean up Orbit conversation and daily claim keys via pattern scan
         try:
@@ -1612,8 +1930,9 @@ class AuthService:
             )
 
         # 6. Issue short-lived reset token (same pattern as forgot_password_verify_otp)
+        user_id = str(user_check.data[0]["id"])
         reset_token = str(uuid.uuid4())
-        redis_manager.setex(f"sv:app:auth:reset_token:{email}", 600, reset_token)
+        redis_manager.setex(f"sv:app:auth:reset_token:{user_id}", 600, reset_token)
 
         logger.info(f"Microsoft OAuth recovery verified: {email}")
 

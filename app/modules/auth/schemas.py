@@ -29,9 +29,35 @@ class VerifyOTPRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     """Request to reset password after OTP verification"""
     model_config = ConfigDict(extra='forbid')
-    email: EmailStr = Field(..., description="University email address")
+    email: EmailStr = Field(..., description="University or personal email used to initiate reset")
     reset_token: str = Field(..., description="Reset token obtained from verifying forgot-password OTP")
     new_password: str = Field(..., min_length=8, max_length=100, description="New password")
+
+
+class SendPersonalEmailOTPRequest(BaseModel):
+    """Request to send an OTP to a user's personal email."""
+    model_config = ConfigDict(extra='forbid')
+    personal_email: EmailStr = Field(..., description="Personal (non-university) email address")
+
+
+class VerifyPersonalEmailOTPRequest(BaseModel):
+    """Request to verify a personal-email OTP."""
+    model_config = ConfigDict(extra='forbid')
+    personal_email: EmailStr = Field(..., description="Personal email address")
+    code: str = Field(..., min_length=6, max_length=6, description="6-digit OTP code")
+
+    @field_validator("code")
+    @classmethod
+    def code_must_be_digits(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("OTP code must contain only digits")
+        return v
+
+
+class SignupVerifyPersonalEmailOTPResponse(BaseModel):
+    """Response after verifying a signup personal-email OTP."""
+    ok: bool = True
+    data: Dict[str, Any] = Field(..., description="Short-lived signup token keyed to the personal email")
 
 class RegisterRequest(BaseModel):
     """Request to complete user registration/profile"""
@@ -159,6 +185,7 @@ class UserProfile(BaseModel):
     """User profile data for /me endpoint"""
     id: str
     email: str
+    personal_email: Optional[str] = None
     name: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None

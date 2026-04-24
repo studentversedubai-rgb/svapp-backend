@@ -30,6 +30,8 @@ class AppStatus(BaseModel):
     alert_cta_url: Optional[str] = None
     alert_dismissible: bool = False
 
+    require_personal_email: bool = False
+
     updated_at: Optional[datetime] = None
     updated_by: Optional[str] = None
 
