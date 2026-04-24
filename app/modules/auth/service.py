@@ -373,6 +373,17 @@ class AuthService:
         try:
             supabase.table("users").insert(profile_data).execute()
         except Exception as e:
+            err_msg = str(e).lower()
+            if "23505" in err_msg or "duplicate" in err_msg or "unique" in err_msg:
+                if "personal_email" in err_msg:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="This personal email is already linked to another account.",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An account with this email already exists.",
+                )
             logger.error(f"Failed to insert user into public.users: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -692,6 +703,27 @@ class AuthService:
         if stored_code != code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
+        supabase = get_supabase_client()
+        if supabase:
+            try:
+                dup = (
+                    supabase.table("users")
+                    .select("id")
+                    .eq("personal_email", normalized)
+                    .limit(1)
+                    .execute()
+                )
+                if dup.data:
+                    redis_manager.delete(redis_key)
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="This email is already linked to another account.",
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Personal email re-check failed: {e}")
+
         signup_token = str(uuid.uuid4())
         redis_manager.setex(f"sv:app:auth:signup_token:{normalized}", 900, signup_token)
         redis_manager.delete(redis_key)
@@ -805,11 +837,36 @@ class AuthService:
             )
 
         try:
+            dup = (
+                supabase.table("users")
+                .select("id")
+                .eq("personal_email", normalized)
+                .neq("id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if dup.data:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This email is already linked to another account.",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Personal email re-check failed for user {user_id}: {e}")
+
+        try:
             supabase.table("users").update({
                 "personal_email": normalized,
                 "personal_email_verified_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", user_id).execute()
         except Exception as e:
+            err_msg = str(e).lower()
+            if "23505" in err_msg or "duplicate" in err_msg or "unique" in err_msg:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This email is already linked to another account.",
+                )
             logger.error(f"Failed to persist personal_email for user {user_id}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -926,6 +983,19 @@ class AuthService:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An account with this email already exists. Please use the login screen.",
+            )
+
+        personal_dup = (
+            supabase.table("users")
+            .select("id")
+            .eq("personal_email", normalized_personal_email)
+            .limit(1)
+            .execute()
+        )
+        if personal_dup.data:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This personal email is already linked to another account.",
             )
 
         enrollment_payload = await self._read_verification_file(enrollment_document, "Enrollment document")
