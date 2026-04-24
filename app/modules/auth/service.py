@@ -894,9 +894,15 @@ class AuthService:
         date_of_birth: str,
         password: str,
         student_id: Optional[str],
-        enrollment_document: UploadFile,
-        student_id_document: UploadFile,
+        enrollment_document: Optional[UploadFile],
+        student_id_document: Optional[UploadFile],
     ) -> Dict[str, Any]:
+        if enrollment_document is None and student_id_document is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please provide either an enrollment document or a student ID photo.",
+            )
+
         normalized_email = self._normalize_email(email)
         normalized_personal_email = self._normalize_email(personal_email)
 
@@ -998,8 +1004,16 @@ class AuthService:
                 detail="This personal email is already linked to another account.",
             )
 
-        enrollment_payload = await self._read_verification_file(enrollment_document, "Enrollment document")
-        student_id_payload = await self._read_verification_file(student_id_document, "Student ID document")
+        enrollment_payload = (
+            await self._read_verification_file(enrollment_document, "Enrollment document")
+            if enrollment_document is not None
+            else None
+        )
+        student_id_payload = (
+            await self._read_verification_file(student_id_document, "Student ID document")
+            if student_id_document is not None
+            else None
+        )
 
         auth_user = None
         submission_id = None
@@ -1078,27 +1092,33 @@ class AuthService:
                 )
             submission_id = submission_insert.data[0]["id"]
 
-            enrollment_path = self._upload_verification_document(
-                user_id=user_id,
-                submission_id=submission_id,
-                slug="enrollment",
-                payload=enrollment_payload,
-            )
-            uploaded_paths.append(enrollment_path)
-            student_id_path = self._upload_verification_document(
-                user_id=user_id,
-                submission_id=submission_id,
-                slug="student-id",
-                payload=student_id_payload,
-            )
-            uploaded_paths.append(student_id_path)
+            submission_update: Dict[str, Any] = {}
+            if enrollment_payload is not None:
+                enrollment_path = self._upload_verification_document(
+                    user_id=user_id,
+                    submission_id=submission_id,
+                    slug="enrollment",
+                    payload=enrollment_payload,
+                )
+                uploaded_paths.append(enrollment_path)
+                submission_update["enrollment_document_path"] = enrollment_path
+                submission_update["enrollment_document_name"] = enrollment_payload["filename"]
 
-            supabase.table("user_verification_submissions").update({
-                "enrollment_document_path": enrollment_path,
-                "enrollment_document_name": enrollment_payload["filename"],
-                "student_id_document_path": student_id_path,
-                "student_id_document_name": student_id_payload["filename"],
-            }).eq("id", submission_id).execute()
+            if student_id_payload is not None:
+                student_id_path = self._upload_verification_document(
+                    user_id=user_id,
+                    submission_id=submission_id,
+                    slug="student-id",
+                    payload=student_id_payload,
+                )
+                uploaded_paths.append(student_id_path)
+                submission_update["student_id_document_path"] = student_id_path
+                submission_update["student_id_document_name"] = student_id_payload["filename"]
+
+            if submission_update:
+                supabase.table("user_verification_submissions").update(
+                    submission_update
+                ).eq("id", submission_id).execute()
 
             self._send_review_email(email_service.send_review_submission_email, normalized_email)
 
@@ -1155,12 +1175,26 @@ class AuthService:
         *,
         email: str,
         password: str,
-        enrollment_document: UploadFile,
-        student_id_document: UploadFile,
+        enrollment_document: Optional[UploadFile],
+        student_id_document: Optional[UploadFile],
     ) -> Dict[str, Any]:
+        if enrollment_document is None and student_id_document is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please provide either an enrollment document or a student ID photo.",
+            )
+
         normalized_email = self._normalize_email(email)
-        enrollment_payload = await self._read_verification_file(enrollment_document, "Enrollment document")
-        student_id_payload = await self._read_verification_file(student_id_document, "Student ID document")
+        enrollment_payload = (
+            await self._read_verification_file(enrollment_document, "Enrollment document")
+            if enrollment_document is not None
+            else None
+        )
+        student_id_payload = (
+            await self._read_verification_file(student_id_document, "Student ID document")
+            if student_id_document is not None
+            else None
+        )
 
         supabase = get_supabase_client()
         if not supabase:
@@ -1210,27 +1244,33 @@ class AuthService:
                 )
             submission_id = submission_insert.data[0]["id"]
 
-            enrollment_path = self._upload_verification_document(
-                user_id=user_id,
-                submission_id=submission_id,
-                slug="enrollment",
-                payload=enrollment_payload,
-            )
-            uploaded_paths.append(enrollment_path)
-            student_id_path = self._upload_verification_document(
-                user_id=user_id,
-                submission_id=submission_id,
-                slug="student-id",
-                payload=student_id_payload,
-            )
-            uploaded_paths.append(student_id_path)
+            submission_update: Dict[str, Any] = {}
+            if enrollment_payload is not None:
+                enrollment_path = self._upload_verification_document(
+                    user_id=user_id,
+                    submission_id=submission_id,
+                    slug="enrollment",
+                    payload=enrollment_payload,
+                )
+                uploaded_paths.append(enrollment_path)
+                submission_update["enrollment_document_path"] = enrollment_path
+                submission_update["enrollment_document_name"] = enrollment_payload["filename"]
 
-            supabase.table("user_verification_submissions").update({
-                "enrollment_document_path": enrollment_path,
-                "enrollment_document_name": enrollment_payload["filename"],
-                "student_id_document_path": student_id_path,
-                "student_id_document_name": student_id_payload["filename"],
-            }).eq("id", submission_id).execute()
+            if student_id_payload is not None:
+                student_id_path = self._upload_verification_document(
+                    user_id=user_id,
+                    submission_id=submission_id,
+                    slug="student-id",
+                    payload=student_id_payload,
+                )
+                uploaded_paths.append(student_id_path)
+                submission_update["student_id_document_path"] = student_id_path
+                submission_update["student_id_document_name"] = student_id_payload["filename"]
+
+            if submission_update:
+                supabase.table("user_verification_submissions").update(
+                    submission_update
+                ).eq("id", submission_id).execute()
 
             supabase.table("users").update({
                 "verification_status": "pending_review",

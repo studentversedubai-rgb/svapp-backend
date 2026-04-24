@@ -24,7 +24,7 @@ from app.modules.auth.schemas import (
 from app.modules.auth.service import auth_service
 from app.core.security import get_current_user, get_current_user_no_device_check
 from app.modules.auth.dependencies import rate_limit_check
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 router = APIRouter()
 
@@ -117,11 +117,15 @@ async def manual_signup(
     date_of_birth: str = Form(...),
     password: str = Form(...),
     student_id: str = Form(""),
-    enrollment_document: UploadFile = File(...),
-    student_id_document: UploadFile = File(...),
+    enrollment_document: Optional[UploadFile] = File(None),
+    student_id_document: Optional[UploadFile] = File(None),
 ):
     """
     Create a pending-review account with uploaded verification documents.
+
+    The user chooses ONE verification method on the frontend: either the
+    enrollment document OR the student ID photo. The unused field is omitted
+    from the multipart payload.
 
     Public endpoint. Requires a valid signup_token obtained from
     /auth/signup/verify-personal-email-otp (proves the personal email is
@@ -149,11 +153,14 @@ async def manual_signup(
 async def manual_signup_resubmit(
     email: str = Form(...),
     password: str = Form(...),
-    enrollment_document: UploadFile = File(...),
-    student_id_document: UploadFile = File(...),
+    enrollment_document: Optional[UploadFile] = File(None),
+    student_id_document: Optional[UploadFile] = File(None),
 ):
     """
     Re-submit verification documents for a previously rejected account.
+
+    Accepts exactly one of enrollment_document or student_id_document, matching
+    the signup flow where the user picks a single verification method.
     """
     result = await auth_service.manual_signup_resubmit(
         email=email,
