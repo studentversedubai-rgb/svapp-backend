@@ -72,7 +72,8 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
-            "https://svmerchant.vercel.app",   # production merchant dashboard
+            "https://svmerchant.vercel.app",
+            "http://studentverseofficial.com",   # production merchant dashboard
             "http://localhost:5173",            # local Vite dev server
             "http://localhost:4173",            # local Vite preview server
         ],
