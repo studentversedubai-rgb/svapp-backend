@@ -236,15 +236,18 @@ class OfferService:
             start_idx = (page - 1) * page_size
             end_idx = start_idx + page_size
             paginated_offers = eligible_offers[start_idx:end_idx]
-            
+
+            # Attach per-user claim counts (single batched query)
+            self._attach_user_claims_counts(user_id, paginated_offers)
+
             # Convert to response models
             offer_items = [
                 self._convert_to_list_item(offer)
                 for offer in paginated_offers
             ]
-            
+
             total_pages = math.ceil(total / page_size) if total > 0 else 0
-            
+
             return PaginatedOffersResponse(
                 items=offer_items,
                 total=total,
@@ -252,7 +255,7 @@ class OfferService:
                 page_size=page_size,
                 total_pages=total_pages
             )
-            
+
         except Exception as e:
             logger.error(f"Error fetching home feed: {e}")
             raise
@@ -376,15 +379,18 @@ class OfferService:
             start_idx = (page - 1) * page_size
             end_idx = start_idx + page_size
             paginated_offers = eligible_offers[start_idx:end_idx]
-            
+
+            # Attach per-user claim counts (single batched query)
+            self._attach_user_claims_counts(user_id, paginated_offers)
+
             # Convert to response models
             offer_items = [
                 self._convert_to_list_item(offer)
                 for offer in paginated_offers
             ]
-            
+
             total_pages = math.ceil(total / page_size) if total > 0 else 0
-            
+
             return PaginatedOffersResponse(
                 items=offer_items,
                 total=total,
@@ -392,7 +398,7 @@ class OfferService:
                 page_size=page_size,
                 total_pages=total_pages
             )
-            
+
         except Exception as e:
             logger.error(f"Error searching offers: {e}")
             raise
@@ -494,7 +500,10 @@ class OfferService:
                         merchant['latitude'], merchant['longitude']
                     )
                     offer['distance_km'] = distance
-            
+
+            # Attach per-user claim count for the authenticated caller
+            self._attach_user_claims_counts(user_id, [offer])
+
             # Convert to detail model
             return self._convert_to_detail(offer)
             
@@ -529,6 +538,47 @@ class OfferService:
     # ================================
     # HELPER METHODS
     # ================================
+
+    def _attach_user_claims_counts(
+        self,
+        user_id: Optional[str],
+        offers: List[dict],
+    ) -> None:
+        """
+        For each offer in `offers`, mutate it to include `user_claims_count`:
+        the number of entitlements this user has on that offer in state
+        'active' or 'used'. Sets None for unauthenticated callers.
+
+        One batched query for the whole page.
+        """
+        if not offers:
+            return
+
+        if not user_id:
+            for offer in offers:
+                offer['user_claims_count'] = None
+            return
+
+        offer_ids = [offer['id'] for offer in offers if offer.get('id')]
+        counts: dict = {oid: 0 for oid in offer_ids}
+
+        try:
+            result = self.supabase.table('entitlements').select(
+                'offer_id'
+            ).eq('user_id', user_id).in_(
+                'offer_id', offer_ids
+            ).in_('state', ['active', 'used']).execute()
+
+            for row in (result.data or []):
+                oid = row.get('offer_id')
+                if oid in counts:
+                    counts[oid] += 1
+        except Exception as e:
+            logger.warning(f"Failed to load user claim counts: {e}")
+            # Fall through with zero counts so the response still succeeds
+
+        for offer in offers:
+            offer['user_claims_count'] = counts.get(offer.get('id'), 0)
 
     def _merchant_is_active(self, offer: dict) -> bool:
         """
@@ -575,6 +625,8 @@ class OfferService:
             valid_from=offer['valid_from'],
             valid_until=offer['valid_until'],
             distance_km=offer.get('distance_km'),
+            max_claims_per_user=offer.get('max_claims_per_user'),
+            user_claims_count=offer.get('user_claims_count'),
             is_featured=offer.get('is_featured', False),
             created_at=offer['created_at']
         )
@@ -605,6 +657,7 @@ class OfferService:
             time_valid_until=offer.get('time_valid_until'),
             valid_days_of_week=offer.get('valid_days_of_week'),
             max_claims_per_user=offer.get('max_claims_per_user'),
+            user_claims_count=offer.get('user_claims_count'),
             total_claims=offer.get('total_claims', 0),
             max_total_claims=offer.get('max_total_claims'),
             is_featured=offer.get('is_featured', False),

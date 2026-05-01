@@ -93,13 +93,18 @@ class OfferListItem(BaseModel):
     
     # Optional: distance if location provided
     distance_km: Optional[float] = None
-    
+
+    # Per-user claim limit and current authenticated user's count
+    # (null when the caller is unauthenticated/guest or the offer has no per-user cap)
+    max_claims_per_user: Optional[int] = None
+    user_claims_count: Optional[int] = None
+
     # Featured flag
     is_featured: bool = False
-    
+
     # Timestamps
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -134,6 +139,7 @@ class OfferDetail(BaseModel):
     
     # Claiming info
     max_claims_per_user: Optional[int] = None
+    user_claims_count: Optional[int] = None
     total_claims: int = 0
     max_total_claims: Optional[int] = None
     
