@@ -44,11 +44,23 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         return response
 
+# App-version / platform capture middleware
+# Reads X-App-Version and X-Platform headers (sent by the mobile app on
+# every request) and stashes them on request.state so handlers and
+# auth dependencies can read them without re-parsing headers.
+class AppContextMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request.state.app_version = request.headers.get("X-App-Version") or None
+        raw_platform = (request.headers.get("X-Platform") or "").lower() or None
+        request.state.platform = raw_platform if raw_platform in ("ios", "android") else None
+        return await call_next(request)
+
+
 # Logging Middleware
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
-        
+
         # Log request safely without PII
         logger.info(f"Request started: {request.method} {request.url.path}")
 

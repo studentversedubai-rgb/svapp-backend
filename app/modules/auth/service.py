@@ -23,6 +23,7 @@ from fastapi import HTTPException, status, UploadFile
 from app.core.database import get_supabase_client, create_fresh_supabase_client
 from app.core.redis import redis_manager
 from app.core.email import email_service
+from app.core.activity import log_activity_event, mark_login, mark_signup_versions
 from app.modules.auth.schemas import RegisterRequest, ProfileUpdateRequest, UserStats
 
 logger = logging.getLogger(__name__)
@@ -437,7 +438,15 @@ class AuthService:
 
         return {"message": "OTP sent"}
 
-    async def verify_otp(self, email: str, code: str, device_id: str = "") -> Dict[str, Any]:
+    async def verify_otp(
+        self,
+        email: str,
+        code: str,
+        device_id: str = "",
+        *,
+        app_version: Optional[str] = None,
+        platform: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Verify OTP for NEW user sign-up only.
 
@@ -516,6 +525,10 @@ class AuthService:
 
         # 5. Consume the OTP
         redis_manager.delete(redis_key)
+
+        # 6. Track signup version + initial activity (best-effort)
+        mark_signup_versions(user_id, app_version=app_version, platform=platform)
+        mark_login(user_id, app_version=app_version, platform=platform)
 
         return {
             "status": "success",
@@ -896,6 +909,8 @@ class AuthService:
         student_id: Optional[str],
         enrollment_document: Optional[UploadFile],
         student_id_document: Optional[UploadFile],
+        app_version: Optional[str] = None,
+        platform: Optional[str] = None,
     ) -> Dict[str, Any]:
         if enrollment_document is None and student_id_document is None:
             raise HTTPException(
@@ -1080,6 +1095,9 @@ class AuthService:
                 verification_status="pending_review",
                 personal_email=normalized_personal_email,
             )
+
+            # Persist signup app version/platform if the mobile app sent them.
+            mark_signup_versions(user_id, app_version=app_version, platform=platform)
 
             submission_insert = supabase.table("user_verification_submissions").insert({
                 "user_id": user_id,
@@ -1405,7 +1423,15 @@ class AuthService:
     # Login (email + password — no OTP needed)
     # ------------------------------------------------------------------
 
-    async def login(self, email: str, password: str, device_id: str = "") -> Dict:
+    async def login(
+        self,
+        email: str,
+        password: str,
+        device_id: str = "",
+        *,
+        app_version: Optional[str] = None,
+        platform: Optional[str] = None,
+    ) -> Dict:
         """
         Authenticate with email + password.
 
@@ -1472,6 +1498,9 @@ class AuthService:
             logger.info(f"User logged in: {email}, device: {device_id or 'unknown'}")
         except Exception as e:
             logger.error(f"Failed to update login state: {e}")
+
+        # 4. Track login activity (best-effort)
+        mark_login(user_id, app_version=app_version, platform=platform)
 
         return {
             "status": "success",
@@ -1660,7 +1689,14 @@ class AuthService:
     # Logout
     # ------------------------------------------------------------------
 
-    async def logout_user(self, user_id: str, access_token: str = None) -> None:
+    async def logout_user(
+        self,
+        user_id: str,
+        access_token: str = None,
+        *,
+        app_version: Optional[str] = None,
+        platform: Optional[str] = None,
+    ) -> None:
         """
         Log out user:
         1. Clear logged_in and device_id in public.users
@@ -1676,6 +1712,14 @@ class AuthService:
             logger.info(f"User logged out: {user_id}")
         except Exception as e:
             logger.error(f"Logout DB update error: {e}")
+
+        # Record the logout event (best-effort)
+        log_activity_event(
+            user_id,
+            "logout",
+            app_version=app_version,
+            platform=platform,
+        )
 
         # Invalidate the JWT in Supabase so it can't be reused for the remaining 1hr window
         if access_token:

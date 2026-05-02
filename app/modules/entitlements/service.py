@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, time as dt_time
 from decimal import Decimal
 from app.core.database import get_supabase_client
 from app.core.redis import redis_manager
+from app.core.activity import log_activity_event
 from app.modules.entitlements.state_machine import state_machine
 from app.modules.entitlements.schemas import (
     ClaimEntitlementResponse,
@@ -182,7 +183,18 @@ class EntitlementService:
             'offer_id': offer_id,
             'entitlement_id': entitlement['id']
         })
-        
+
+        # Realtime user activity feed
+        log_activity_event(
+            user_id,
+            "offer_claim",
+            event_data={
+                "offer_id": offer_id,
+                "offer_title": offer.get("title"),
+                "entitlement_id": entitlement["id"],
+            },
+        )
+
         logger.info(f"Entitlement claimed: {entitlement['id']} by user {user_id}")
         
         return ClaimEntitlementResponse(
@@ -452,10 +464,25 @@ class EntitlementService:
             'redemption_id': redemption['id'],
             'savings': float(discount_amount)
         })
-        
+
+        # Realtime user activity feed
+        merchant = await self._get_merchant(offer['merchant_id'])
+        log_activity_event(
+            entitlement['user_id'],
+            "redemption",
+            event_data={
+                "offer_id": offer['id'],
+                "offer_title": offer.get('title'),
+                "merchant_name": (merchant or {}).get('name'),
+                "entitlement_id": entitlement_id,
+                "redemption_id": redemption['id'],
+                "savings": float(discount_amount),
+            },
+        )
+
         # TODO: Send notification to student
         # "Redemption successful — You saved AED {discount_amount}"
-        
+
         logger.info(f"Redemption confirmed: {redemption['id']} for entitlement {entitlement_id}")
         
         return ConfirmRedemptionResponse(

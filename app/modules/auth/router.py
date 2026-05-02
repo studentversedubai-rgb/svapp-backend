@@ -50,7 +50,15 @@ async def verify_otp(request_body: VerifyOTPRequest, request: Request):
     Returns Access Token.
     """
     device_id = request.headers.get("X-Device-ID", "")
-    result = await auth_service.verify_otp(request_body.email, request_body.code, device_id)
+    app_version = getattr(request.state, "app_version", None)
+    platform = getattr(request.state, "platform", None)
+    result = await auth_service.verify_otp(
+        request_body.email,
+        request_body.code,
+        device_id,
+        app_version=app_version,
+        platform=platform,
+    )
     return AuthResponse(data=result)
 
 
@@ -106,6 +114,7 @@ async def signup_verify_personal_email_otp(request: VerifyPersonalEmailOTPReques
 
 @router.post("/manual-signup")
 async def manual_signup(
+    request: Request,
     email: str = Form(...),
     personal_email: str = Form(...),
     signup_token: str = Form(...),
@@ -145,6 +154,8 @@ async def manual_signup(
         student_id=student_id or None,
         enrollment_document=enrollment_document,
         student_id_document=student_id_document,
+        app_version=getattr(request.state, "app_version", None),
+        platform=getattr(request.state, "platform", None),
     )
     return {"ok": True, "data": result}
 
@@ -210,7 +221,15 @@ async def login(request_body: LoginRequest, request: Request):
     Legacy Login (Email/Password) - Not primary flow.
     """
     device_id = request.headers.get("X-Device-ID", "")
-    result = await auth_service.login(request_body.email, request_body.password, device_id)
+    app_version = getattr(request.state, "app_version", None)
+    platform = getattr(request.state, "platform", None)
+    result = await auth_service.login(
+        request_body.email,
+        request_body.password,
+        device_id,
+        app_version=app_version,
+        platform=platform,
+    )
     return AuthResponse(data=result)
 
 
@@ -312,13 +331,19 @@ async def get_analytics(current_user: Dict = Depends(get_current_user)):
 
 @router.post("/logout")
 async def logout(
+    request: Request,
     current_user: Dict = Depends(get_current_user),
     credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer())
 ):
     """
     Logout user — clears device binding and invalidates the Supabase JWT.
     """
-    await auth_service.logout_user(current_user["id"], access_token=credentials.credentials)
+    await auth_service.logout_user(
+        current_user["id"],
+        access_token=credentials.credentials,
+        app_version=getattr(request.state, "app_version", None),
+        platform=getattr(request.state, "platform", None),
+    )
     return {"message": "Logged out successfully"}
 
 

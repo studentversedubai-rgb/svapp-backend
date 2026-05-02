@@ -9,6 +9,7 @@ from typing import Optional, Dict
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.database import get_supabase_client, create_fresh_supabase_client
+from app.core.activity import touch_last_active
 
 logger = logging.getLogger(__name__)
 
@@ -116,10 +117,19 @@ async def get_current_user(
             # Requirement: "Add device_id check... When user makes authenticated request, verify device_id matches"
             # If no header, we can't verify. For strict security, we'd require header.
             # But during migration or testing, maybe allow?
-            # Decision: Allow access if no header, but log warning. 
+            # Decision: Allow access if no header, but log warning.
             # Or enforce it? "If mismatch: return 403". "Allow first-time...".
             # I'll allow access without header for flexibility, but enforce if header is present.
-            
+
+            # Heartbeat: bump last_active_at (throttled to 30s) so the dashboard
+            # Realtime Users page can show who is currently active. Best-effort.
+            app_version = getattr(getattr(request, "state", None), "app_version", None)
+            touch_last_active(
+                user_id,
+                app_version=app_version,
+                last_active_at_existing=user.get("last_active_at"),
+            )
+
             return user
             
         except HTTPException:

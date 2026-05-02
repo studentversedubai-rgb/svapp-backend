@@ -18,6 +18,7 @@ from uuid import UUID
 from postmarker.core import PostmarkClient
 
 from app.core.database import get_supabase_client
+from app.core.activity import log_activity_event
 from app.modules.payments.schemas import (
     CreateMockOrderRequest,
     CreateMockOrderResponse,
@@ -662,13 +663,27 @@ StudentVerse Team"""
             raise HTTPException(400, "PaymentIntent does not match this booking")
             
         self.supabase.table("ticket_records").update({"payment_status": "confirmed"}).eq("id", str(payload.record_id)).execute()
-        
+
         ticket_join = record.get("ticket", {})
         if isinstance(ticket_join, list):
             ticket_join = ticket_join[0] if ticket_join else {}
         merchant_name = ticket_join.get("merchant_name", "Unknown Merchant")
         ticket_details = ticket_join.get("ticket_details", "")
-        
+
+        # Realtime user activity feed
+        log_activity_event(
+            user_id,
+            "ticket_purchase",
+            event_data={
+                "record_id": str(payload.record_id),
+                "ticket_id": record.get("ticket_id"),
+                "ticket_name": ticket_details,
+                "merchant_name": merchant_name,
+                "total_price": record.get("total_price"),
+                "quantity": record.get("quantity"),
+            },
+        )
+
         try:
             self._send_confirmation_email_to_user(record, merchant_name, ticket_details)
         except Exception as e:
@@ -705,13 +720,28 @@ StudentVerse Team"""
                     record = record_result.data[0]
                     if record.get("payment_status") != "confirmed":
                         self.supabase.table("ticket_records").update({"payment_status": "confirmed"}).eq("id", record_id).execute()
-                        
+
                         ticket_join = record.get("ticket", {})
                         if isinstance(ticket_join, list):
                             ticket_join = ticket_join[0] if ticket_join else {}
                         merchant_name = ticket_join.get("merchant_name", "Unknown Merchant")
                         ticket_details = ticket_join.get("ticket_details", "")
-                        
+
+                        # Realtime user activity feed
+                        if record.get("user_id"):
+                            log_activity_event(
+                                record["user_id"],
+                                "ticket_purchase",
+                                event_data={
+                                    "record_id": record_id,
+                                    "ticket_id": record.get("ticket_id"),
+                                    "ticket_name": ticket_details,
+                                    "merchant_name": merchant_name,
+                                    "total_price": record.get("total_price"),
+                                    "quantity": record.get("quantity"),
+                                },
+                            )
+
                         try:
                             self._send_confirmation_email_to_user(record, merchant_name, ticket_details)
                         except Exception as e:
