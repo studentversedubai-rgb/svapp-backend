@@ -20,7 +20,7 @@ from io import BytesIO
 from datetime import date, datetime, timezone
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, status, UploadFile
-from app.core.database import get_supabase_client, create_fresh_supabase_client
+from app.core.database import get_user_client, get_supabase_client, create_fresh_supabase_client
 from app.core.redis import redis_manager
 from app.core.email import email_service
 from app.core.activity import log_activity_event, mark_login, mark_signup_versions
@@ -127,7 +127,7 @@ class AuthService:
         Used by forgot-password so users can type either email they know.
         """
         normalized = self._normalize_email(email)
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -155,7 +155,7 @@ class AuthService:
             domain = self._normalize_email(email).split("@", 1)[1]
         except IndexError:
             return False
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             return False
         try:
@@ -179,7 +179,7 @@ class AuthService:
         except IndexError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid email format")
 
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -402,7 +402,7 @@ class AuthService:
         except IndexError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid email format")
 
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
@@ -462,7 +462,7 @@ class AuthService:
         if stored_code != code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
@@ -661,7 +661,7 @@ class AuthService:
                 detail="Please use a personal email, not your university email.",
             )
 
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -716,7 +716,7 @@ class AuthService:
         if stored_code != code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if supabase:
             try:
                 dup = (
@@ -770,7 +770,7 @@ class AuthService:
                 detail="Please use a personal email, not your university email.",
             )
 
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -842,7 +842,7 @@ class AuthService:
         if stored_code != code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -948,11 +948,13 @@ class AuthService:
             password=password,
         )
 
-        supabase = get_supabase_client()
-        if not supabase:
+        admin_client = get_supabase_client()
+        user_client = get_user_client()
+
+        if not admin_client or not user_client:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
-        blacklist = supabase.table("user_blacklist").select("email").eq("email", normalized_email).execute()
+        blacklist = admin_client.table("user_blacklist").select("email").eq("email", normalized_email).execute()
         if blacklist.data:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -966,7 +968,7 @@ class AuthService:
                 },
             )
 
-        existing = supabase.table("users").select(
+        existing = user_client.table("users").select(
             "id, verification_status"
         ).eq("email", normalized_email).execute()
         if existing.data:
@@ -1007,7 +1009,7 @@ class AuthService:
             )
 
         personal_dup = (
-            supabase.table("users")
+            user_client.table("users")
             .select("id")
             .eq("personal_email", normalized_personal_email)
             .limit(1)
@@ -1036,7 +1038,7 @@ class AuthService:
 
         try:
             try:
-                auth_response = supabase.auth.admin.create_user({
+                auth_response = admin_client.auth.admin.create_user({
                     "email": normalized_email,
                     "password": password,
                     "email_confirm": True,
@@ -1059,7 +1061,7 @@ class AuthService:
                     # We already confirmed public.users has no row for this email above,
                     # so any auth.users record is an orphan from a prior failed attempt.
                     # Adopt it: reset password, reuse user_id, continue signup.
-                    orphan_id = self._find_auth_user_id_by_email(supabase, normalized_email)
+                    orphan_id = self._find_auth_user_id_by_email(admin_client, normalized_email)
                     if not orphan_id:
                         logger.error(
                             f"Auth reports {normalized_email} exists but list_users could not locate it"
@@ -1069,7 +1071,7 @@ class AuthService:
                             detail="An account with this email already exists. Please use the login screen or contact support.",
                         )
                     try:
-                        supabase.auth.admin.update_user_by_id(
+                        admin_client.auth.admin.update_user_by_id(
                             orphan_id,
                             {"password": password, "email_confirm": True},
                         )
@@ -1099,7 +1101,7 @@ class AuthService:
             # Persist signup app version/platform if the mobile app sent them.
             mark_signup_versions(user_id, app_version=app_version, platform=platform)
 
-            submission_insert = supabase.table("user_verification_submissions").insert({
+            submission_insert = admin_client.table("user_verification_submissions").insert({
                 "user_id": user_id,
                 "status": "pending_review",
             }).execute()
@@ -1134,7 +1136,7 @@ class AuthService:
                 submission_update["student_id_document_name"] = student_id_payload["filename"]
 
             if submission_update:
-                supabase.table("user_verification_submissions").update(
+                admin_client.table("user_verification_submissions").update(
                     submission_update
                 ).eq("id", submission_id).execute()
 
@@ -1150,7 +1152,7 @@ class AuthService:
                 self._delete_storage_object(path)
             if submission_id:
                 try:
-                    supabase.table("user_verification_submissions").delete().eq("id", submission_id).execute()
+                    admin_client.table("user_verification_submissions").delete().eq("id", submission_id).execute()
                 except Exception as e:
                     logger.error(f"Failed to rollback verification submission {submission_id}: {e}")
             if auth_user:
@@ -1159,8 +1161,8 @@ class AuthService:
                         auth_user.get("id") if isinstance(auth_user, dict) else None
                     )
                     if rollback_user_id:
-                        supabase.table("users").delete().eq("id", str(rollback_user_id)).execute()
-                        supabase.auth.admin.delete_user(str(rollback_user_id))
+                        admin_client.table("users").delete().eq("id", str(rollback_user_id)).execute()
+                        admin_client.auth.admin.delete_user(str(rollback_user_id))
                 except Exception as e:
                     logger.error(f"Failed to rollback manual signup for {normalized_email}: {e}")
             raise
@@ -1170,7 +1172,7 @@ class AuthService:
                 self._delete_storage_object(path)
             if submission_id:
                 try:
-                    supabase.table("user_verification_submissions").delete().eq("id", submission_id).execute()
+                    admin_client.table("user_verification_submissions").delete().eq("id", submission_id).execute()
                 except Exception:
                     pass
             if auth_user:
@@ -1179,8 +1181,8 @@ class AuthService:
                         auth_user.get("id") if isinstance(auth_user, dict) else None
                     )
                     if rollback_user_id:
-                        supabase.table("users").delete().eq("id", str(rollback_user_id)).execute()
-                        supabase.auth.admin.delete_user(str(rollback_user_id))
+                        admin_client.table("users").delete().eq("id", str(rollback_user_id)).execute()
+                        admin_client.auth.admin.delete_user(str(rollback_user_id))
                 except Exception:
                     pass
             raise HTTPException(
@@ -1214,11 +1216,13 @@ class AuthService:
             else None
         )
 
-        supabase = get_supabase_client()
-        if not supabase:
+        user_client = get_user_client()
+        admin_client = get_supabase_client()
+        if not user_client or not admin_client:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
-        user_lookup = supabase.table("users").select(
+
+        user_lookup = user_client.table("users").select(
             "id, email, verification_status"
         ).eq("email", normalized_email).execute()
         if not user_lookup.data:
@@ -1251,7 +1255,7 @@ class AuthService:
         uploaded_paths: list[str] = []
 
         try:
-            submission_insert = supabase.table("user_verification_submissions").insert({
+            submission_insert = admin_client.table("user_verification_submissions").insert({
                 "user_id": user_id,
                 "status": "pending_review",
             }).execute()
@@ -1286,11 +1290,11 @@ class AuthService:
                 submission_update["student_id_document_name"] = student_id_payload["filename"]
 
             if submission_update:
-                supabase.table("user_verification_submissions").update(
+                admin_client.table("user_verification_submissions").update(
                     submission_update
                 ).eq("id", submission_id).execute()
 
-            supabase.table("users").update({
+            admin_client.table("users").update({
                 "verification_status": "pending_review",
                 "verification_submitted_at": datetime.now(timezone.utc).isoformat(),
                 "verification_reviewed_at": None,
@@ -1310,7 +1314,7 @@ class AuthService:
                 self._delete_storage_object(path)
             if submission_id:
                 try:
-                    supabase.table("user_verification_submissions").delete().eq("id", submission_id).execute()
+                    admin_client.table("user_verification_submissions").delete().eq("id", submission_id).execute()
                 except Exception as e:
                     logger.error(f"Failed to rollback resubmission {submission_id}: {e}")
             raise
@@ -1320,7 +1324,7 @@ class AuthService:
                 self._delete_storage_object(path)
             if submission_id:
                 try:
-                    supabase.table("user_verification_submissions").delete().eq("id", submission_id).execute()
+                    admin_client.table("user_verification_submissions").delete().eq("id", submission_id).execute()
                 except Exception:
                     pass
             raise HTTPException(
@@ -1329,7 +1333,7 @@ class AuthService:
             )
         finally:
             try:
-                supabase.auth.admin.sign_out(access_token)
+                admin_client.auth.admin.sign_out(access_token)
             except Exception as e:
                 logger.error(f"Failed to invalidate temporary resubmission token: {e}")
 
@@ -1343,8 +1347,10 @@ class AuthService:
         1. Setting the user's chosen password in Supabase Auth (FATAL if fails)
         2. Saving profile fields to public.users
         """
-        supabase = get_supabase_client()
-        if not supabase:
+        admin_client = get_supabase_client()
+        user_client = get_user_client()
+    
+        if not admin_client or not user_client:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
         try:
@@ -1356,7 +1362,7 @@ class AuthService:
             new_access_token = None
             if password_to_set:
                 try:
-                    supabase.auth.admin.update_user_by_id(user_id, {"password": password_to_set})
+                    admin_client.auth.admin.update_user_by_id(user_id, {"password": password_to_set})
                     logger.info(f"Password set for user: {user_id}")
                 except Exception as pw_err:
                     logger.error(f"Failed to set password for user {user_id}: {pw_err}")
@@ -1399,7 +1405,7 @@ class AuthService:
                 update_data["avatar_url"] = avatar_url
 
             # --- Step 3: Update public.users ---
-            result = supabase.table("users").update(update_data).eq("id", user_id).execute()
+            result = user_client.table("users").update(update_data).eq("id", user_id).execute()
             if not result.data:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User profile not found. Please verify OTP first.")
 
@@ -1442,13 +1448,15 @@ class AuthService:
         No 409 is ever raised here — a user can always log back in from a
         new device using their correct credentials.
         """
-        supabase = get_supabase_client()
-        if not supabase:
+        user_client = get_user_client()
+        admin_client = get_supabase_client()
+    
+        if not user_client or not admin_client:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
         # 1. Confirm user has a completed account in public.users
         try:
-            user_check = supabase.table("users").select(
+            user_check = user_client.table("users").select(
                 "id, email, verification_status, verification_rejection_reason"
             ).eq("email", email).execute()
             if not user_check.data:
@@ -1480,7 +1488,7 @@ class AuthService:
 
         if verification_status != "approved":
             try:
-                supabase.auth.admin.sign_out(access_token)
+                admin_client.auth.admin.sign_out(access_token)
             except Exception as e:
                 logger.error(f"Failed to invalidate blocked login token for {email}: {e}")
 
@@ -1494,7 +1502,7 @@ class AuthService:
             update_payload: dict = {"logged_in": True}
             if device_id:
                 update_payload["device_id"] = device_id
-            supabase.table("users").update(update_payload).eq("id", user_id).execute()
+            user_client.table("users").update(update_payload).eq("id", user_id).execute()
             logger.info(f"User logged in: {email}, device: {device_id or 'unknown'}")
         except Exception as e:
             logger.error(f"Failed to update login state: {e}")
@@ -1516,7 +1524,7 @@ class AuthService:
 
     async def update_profile(self, user_id: str, request: ProfileUpdateRequest) -> Dict[str, Any]:
         """Update allowed user profile fields."""
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database connection error")
 
@@ -1554,7 +1562,7 @@ class AuthService:
 
     async def get_profile(self, user_id: str) -> Dict[str, Any]:
         """Fetch a single public.users row by id."""
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database connection error")
 
@@ -1608,8 +1616,10 @@ class AuthService:
         if not extension:
             extension = ALLOWED_PROFILE_IMAGE_MIME_TYPES.get(mime_type) or ".jpg"
 
-        supabase = get_supabase_client()
-        if not supabase:
+        admin_client = get_supabase_client()
+        user_client = get_user_client()
+    
+        if not admin_client or not user_client:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Database connection error",
@@ -1619,7 +1629,7 @@ class AuthService:
         path = f"{user_id}/pfp-{timestamp_ms}{extension}"
 
         try:
-            supabase.storage.from_(PROFILE_IMAGE_BUCKET_NAME).upload(
+            admin_client.storage.from_(PROFILE_IMAGE_BUCKET_NAME).upload(
                 path=path,
                 file=data,
                 file_options={
@@ -1635,7 +1645,7 @@ class AuthService:
             )
 
         try:
-            public_url = supabase.storage.from_(PROFILE_IMAGE_BUCKET_NAME).get_public_url(path)
+            public_url = admin_client.storage.from_(PROFILE_IMAGE_BUCKET_NAME).get_public_url(path)
         except Exception as e:
             logger.error(f"Failed to resolve public URL for {path}: {e}")
             raise HTTPException(
@@ -1646,7 +1656,7 @@ class AuthService:
         avatar_url = (public_url or "").strip().rstrip("?")
 
         try:
-            supabase.table("users").update({"avatar_url": avatar_url}).eq("id", user_id).execute()
+            user_client.table("users").update({"avatar_url": avatar_url}).eq("id", user_id).execute()
         except Exception as e:
             logger.error(f"Failed to persist avatar_url for user {user_id}: {e}")
             raise HTTPException(
@@ -1658,7 +1668,7 @@ class AuthService:
 
     async def get_user_analytics(self, user_id: str) -> UserStats:
         """Calculate user analytics from redemptions."""
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         try:
             response = supabase.table("redemptions") \
                 .select("discount_amount, total_bill_amount, final_amount") \
@@ -1702,16 +1712,15 @@ class AuthService:
         1. Clear logged_in and device_id in public.users
         2. Attempt to invalidate the Supabase JWT so it cannot be reused
         """
-        supabase = get_supabase_client()
-        if not supabase:
-            return
+        user_client = get_user_client()
+        admin_client = get_supabase_client()
 
-        # Clear session state in DB (device_id cleared → old token gets 403 if somehow reused)
-        try:
-            supabase.table("users").update({"logged_in": False, "device_id": None}).eq("id", user_id).execute()
-            logger.info(f"User logged out: {user_id}")
-        except Exception as e:
-            logger.error(f"Logout DB update error: {e}")
+        if user_client:
+            try:
+                user_client.table("users").update({"logged_in": False, "device_id": None}).eq("id", user_id).execute()
+                logger.info(f"User logged out: {user_id}")
+            except Exception as e:
+                logger.error(f"Logout DB update error: {e}")
 
         # Record the logout event (best-effort)
         log_activity_event(
@@ -1722,9 +1731,9 @@ class AuthService:
         )
 
         # Invalidate the JWT in Supabase so it can't be reused for the remaining 1hr window
-        if access_token:
+        if access_token and admin_client:
             try:
-                supabase.auth.admin.sign_out(access_token)
+                admin_client.auth.admin.sign_out(access_token)
                 logger.info(f"Supabase JWT invalidated for user: {user_id}")
             except Exception as e:
                 # Non-fatal — device_id clearing already handles security
@@ -1734,7 +1743,7 @@ class AuthService:
     # Account Deletion (permanent)
     # ------------------------------------------------------------------
 
-    async def delete_account(self, user_id: str, access_token: str = None) -> None:
+    async def (self, user_id: str, access_token: str = None) -> None:
         """
         Permanently delete a user account and all associated data.
 
@@ -1802,6 +1811,7 @@ class AuthService:
         # ── 5. Delete Stripe customer (best-effort) ──
         if stripe_customer_id:
             try:
+                # pyrefly: ignore [missing-import]
                 import stripe
                 stripe.Customer.delete(stripe_customer_id)
                 logger.info(f"Deleted Stripe customer {stripe_customer_id} for user: {user_id}")
@@ -1860,7 +1870,7 @@ class AuthService:
 
     async def list_verified_institutions(self) -> list:
         """Return list of active verified universities for frontend dropdown."""
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1975,8 +1985,10 @@ class AuthService:
         """
         auth_user, email, domain, university_name = self._validate_azure_token(access_token)
 
-        supabase = get_supabase_client()
-        if not supabase:
+        user_client = get_user_client()
+        admin_client = get_supabase_client()
+    
+        if not user_client or not admin_client:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Database connection error"
@@ -1984,7 +1996,7 @@ class AuthService:
 
         # 5. Reject if account already exists in public.users
         try:
-            existing = supabase.table("users").select("id").eq("email", email).execute()
+            existing = user_client.table("users").select("id").eq("email", email).execute()
             if existing.data:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -2031,7 +2043,7 @@ class AuthService:
 
         # Insert into public.users
         try:
-            supabase.table("users").insert({
+            admin_client.table("users").insert({
                 "id": user_id,
                 "email": email,
                 "account_type": "free",
@@ -2043,7 +2055,7 @@ class AuthService:
             logger.error(f"Failed to insert user into public.users: {e}")
             # Roll back the Supabase Auth user so it's not orphaned
             try:
-                supabase.auth.admin.delete_user(user_id)
+                admin_client.auth.admin.delete_user(user_id)
             except Exception:
                 pass
             raise HTTPException(
@@ -2077,7 +2089,7 @@ class AuthService:
         """
         auth_user, email, domain, university_name = self._validate_azure_token(access_token)
 
-        supabase = get_supabase_client()
+        supabase = get_user_client()
         if not supabase:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

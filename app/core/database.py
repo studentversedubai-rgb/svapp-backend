@@ -22,6 +22,7 @@ _supabase_url: str = os.getenv("SUPABASE_URL", "")
 _supabase_service_key: str = (
     os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or ""
 )
+_supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY", "")  
 
 # ---------------------------------------------------------------------------
 # Singleton admin client — used for table queries and admin auth operations.
@@ -73,10 +74,26 @@ def create_fresh_supabase_client() -> Client | None:
     A fresh client keeps user session state isolated so the shared admin
     client is never contaminated.
     """
-    if not _supabase_url or not _supabase_service_key:
+    if not _supabase_url or not _supabase_anon_key:
+        print("WARNING: SUPABASE_URL or SUPABASE_ANON_KEY not found")
         return None
     try:
-        return create_client(_supabase_url, _supabase_service_key)
+        return create_client(_supabase_url, _supabase_anon_key) 
     except Exception as e:
         print(f"ERROR: Failed to create fresh Supabase client: {e}")
+        return None
+
+
+# Anon client
+def get_user_client() -> Client | None:
+    """
+    Return a client using the ANON key for user-facing queries.
+    Use this for queries that should respect RLS policies.
+    """
+    if not _supabase_url or not _supabase_anon_key:
+        return None
+    try:
+        return create_client(_supabase_url, _supabase_anon_key)
+    except Exception as e:
+        print(f"ERROR: Failed to create user client:{e}")
         return None
