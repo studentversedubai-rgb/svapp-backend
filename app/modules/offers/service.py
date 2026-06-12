@@ -7,9 +7,9 @@ Implements time-based, day-based, and distance-based filtering.
 
 import math
 import logging
-from datetime import datetime, time as datetime_time, timezone
-from typing import List, Optional, Tuple
-from app.core.database import get_supabase_client
+from datetime import datetime, timezone
+from typing import List, Optional
+from app.core.database import get_user_client
 from app.modules.offers.schemas import (
     OfferListItem, OfferDetail, MerchantBasic, MerchantDetail,
     CategoryResponse, PaginatedOffersResponse
@@ -18,11 +18,36 @@ from app.modules.offers.schemas import (
 logger = logging.getLogger(__name__)
 
 
+def escape_ilike(term: str) -> str:
+    """
+    Escape user input for PostgREST ilike filters.
+    Prevents filter injection while preserving normal searches.
+    """
+
+    if not term:
+        return ""
+
+    # Limit size
+    term = term[:100]
+
+    # Remove PostgREST separator
+    term = term.replace(",", " ")
+
+    # Escape wildcard chars
+    term = term.replace("%", r"\%")
+    term = term.replace("_", r"\_")
+
+    # Normalize spaces
+    term = " ".join(term.split())
+
+    return term.strip()
+
 class OfferService:
     """Handles offer operations with eligibility filtering"""
     
     def __init__(self):
-        self.supabase = get_supabase_client()
+        # ✅ FIXED: Use user client (anon key + JWT) to respect RLS
+        self.supabase = get_user_client()
     
     # ================================
     # ELIGIBILITY LOGIC
@@ -87,9 +112,21 @@ class OfferService:
                     time_valid_until = datetime.strptime(time_valid_until, '%H:%M:%S').time()
                 
                 # Check if current time is within valid window
-                if not (time_valid_from <= current_time <= time_valid_until):
+                # Handle normal vs overnight windows
+                if time_valid_from <= time_valid_until:
+                    valid_time = (
+                        time_valid_from <= current_time <= time_valid_until
+                    )
+                else:
+                    # Overnight window (example: 22:00 -> 02:00)
+                    valid_time = (
+                        current_time >= time_valid_from or
+                        current_time <= time_valid_until
+                    )
+
+                if not valid_time:
                     return False
-        
+                        
         # Rule 4: Check day of week (if specified and check_day=True)
         if check_day:
             valid_days = offer.get('valid_days_of_week')
@@ -176,9 +213,6 @@ class OfferService:
             # Filter: only active offers
             query = query.eq("is_active", True)
             
-            # NOTE: .eq("merchants.is_active", True) does NOT work in PostgREST
-            # — filter inactive merchants in Python after the join instead.
-            
             # Filter: date range validity
             now = datetime.now(timezone.utc).isoformat()
             query = query.lte("valid_from", now).gte("valid_until", now)
@@ -195,7 +229,7 @@ class OfferService:
                     total_pages=0
                 )
             
-            # Filter: merchant must be active (done in Python — PostgREST join filter doesn't work)
+            # Filter: merchant must be active
             active_offers = [
                 offer for offer in result.data
                 if self._merchant_is_active(offer)
@@ -299,8 +333,6 @@ class OfferService:
             
             # Filter: only active offers from active merchants
             db_query = db_query.eq("is_active", True)
-            # NOTE: .eq("merchants.is_active", True) does NOT work in PostgREST
-            # — filter inactive merchants in Python after the join instead.
             
             # Filter: date range
             now = datetime.now(timezone.utc).isoformat()
@@ -310,10 +342,12 @@ class OfferService:
             if category_id:
                 db_query = db_query.eq("category_id", category_id)
             
-            # Filter: text search (if query provided)
+            # ✅ FIXED: Filter: text search with escaping
             if query:
-                # Supabase text search - search in title and description
-                db_query = db_query.or_(f"title.ilike.%{query}%,description.ilike.%{query}%")
+                safe_query = escape_ilike(query)
+                
+                if safe_query:  # Only search if there's something left after sanitization
+                    db_query = db_query.or_(f"title.ilike.%{safe_query}%,description.ilike.%{safe_query}%")
             
             # Execute query
             result = db_query.execute()
@@ -327,7 +361,7 @@ class OfferService:
                     total_pages=0
                 )
             
-            # Filter: merchant must be active (Python-side — PostgREST join filter doesn't work)
+            # Filter: merchant must be active
             active_offers = [
                 offer for offer in result.data
                 if self._merchant_is_active(offer)

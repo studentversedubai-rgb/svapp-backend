@@ -18,7 +18,7 @@ from uuid import UUID
 
 os.environ.setdefault("PASSLIB_BUILTIN_BCRYPT", "enabled")
 
-from passlib.hash import bcrypt as bcrypt_hasher
+from passlib.hash import bcrypt as bcrypt_hasher # pyright: ignore
 
 from app.core.database import get_supabase_client
 from app.core.redis import redis_manager
@@ -450,36 +450,51 @@ class MerchantService:
         """Get redemption by ID"""
         result = self.supabase.table('redemptions').select('*').eq('id', str(redemption_id)).execute()
         return result.data[0] if result.data else None
-    
+
+
     async def _verify_merchant_pin(self, merchant_id: str, pin: str) -> bool:
         """
-        Verify merchant PIN
-        
-        Merchant PINs are stored as bcrypt hashes in merchants.pin_hash.
+        Verify merchant PIN with automatic upgrade from SHA-256 to bcrypt.
         """
-        try:
-            merchant = await self._get_merchant(merchant_id)
-            if not merchant:
-                return False
-            
-            stored_hash = merchant.get('pin_hash')
-            if not stored_hash:
-                logger.warning(f"No PIN hash for merchant {merchant_id}")
-                return False
-
-            # Support both bcrypt and SHA256 hashes to match existing data.
-            if stored_hash.startswith('$2a$') or stored_hash.startswith('$2b$') or stored_hash.startswith('$2y$'):
-                return bcrypt_hasher.verify(pin, stored_hash)
-
-            if re.fullmatch(r"[0-9a-fA-F]{64}", stored_hash):
-                pin_hash = hashlib.sha256(pin.encode('utf-8')).hexdigest()
-                return hmac.compare_digest(pin_hash, stored_hash.lower())
-
-            # Fallback: try bcrypt verification for any other format.
-            return bcrypt_hasher.verify(pin, stored_hash)
-        except Exception as e:
-            logger.error(f"Error verifying merchant PIN: {e}")
+        merchant = await self._get_merchant(merchant_id)
+        if not merchant:
             return False
+
+        stored_hash = merchant.get('pin_hash')
+        if not stored_hash:
+            logger.warning(f"No PIN hash for merchant {merchant_id}")
+            return False
+
+        # CASE 1: Already bcrypt (modern, secure)
+        if stored_hash.startswith('$2a$') or stored_hash.startswith('$2b$') or stored_hash.startswith('$2y$'):
+            return bcrypt_hasher.verify(pin, stored_hash)
+
+        # CASE 2: Old SHA-256 hash (legacy, needs upgrade)
+        if re.fullmatch(r"[0-9a-fA-F]{64}", stored_hash):
+            # Verify with SHA-256
+            pin_hash = hashlib.sha256(pin.encode('utf-8')).hexdigest()
+            if hmac.compare_digest(pin_hash, stored_hash.lower()):
+                # PIN is correct - AUTOMATICALLY UPGRADE to bcrypt
+                new_hash = bcrypt_hasher.hash(pin)
+                await self._upgrade_merchant_pin_hash(merchant_id, new_hash)
+                logger.info(f"Auto-upgraded PIN hash for merchant {merchant_id} from SHA-256 to bcrypt")
+                return True
+            return False
+
+        # CASE 3: Unknown format - reject
+        logger.warning(f"Unknown PIN hash format for merchant {merchant_id}")
+        return False
+
+
+    async def _upgrade_merchant_pin_hash(self, merchant_id: str, new_hash: str) -> None:
+        """Upgrade merchant's PIN hash to bcrypt."""
+        try:
+            self.supabase.table("merchants").update({
+                "pin_hash": new_hash
+            }).eq("id", merchant_id).execute()
+        except Exception as e:
+            logger.error(f"Failed to upgrade PIN hash for merchant {merchant_id}: {e}")   
+
     
     def _calculate_savings(
         self,
