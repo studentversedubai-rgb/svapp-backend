@@ -4,7 +4,7 @@ Authentication Router
 Handles OTP-based authentication and Profile Management.
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends, Request, Form, File, UploadFile
+from fastapi import APIRouter, Depends, Request, Form, File, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.modules.auth.schemas import (
     SendOTPRequest,
@@ -17,38 +17,22 @@ from app.modules.auth.schemas import (
     ProfileResponse,
     AnalyticsResponse,
     UserProfile,
-    UserStats,
     SendPersonalEmailOTPRequest,
     VerifyPersonalEmailOTPRequest,
 )
 from app.modules.auth.service import auth_service
 from app.core.security import get_current_user, get_current_user_no_device_check
-from app.modules.auth.dependencies import rate_limit_check
 from typing import Dict, Any, Optional
 
 router = APIRouter()
-
-
 @router.post("/send-otp")
 async def send_otp(request: SendOTPRequest):
-    """
-    Send OTP to user's university email
-    """
     result = await auth_service.send_otp(request.email)
-    # The default response format handler should ideally wrap this if we standardize ALL responses,
-    # but here we manually wrap to ensure consistency with AuthResponse style if needed,
-    # or rely on the dict being returned as JSON.
-    # User requirement: "Return consistent JSON responses with 'ok', 'error', 'data' structure"
-    # We should return {"ok": true, "data": result}
     return {"ok": True, "data": result}
 
 
 @router.post("/verify-otp", response_model=AuthResponse)
 async def verify_otp(request_body: VerifyOTPRequest, request: Request):
-    """
-    Verify OTP and authenticate user.
-    Returns Access Token.
-    """
     device_id = request.headers.get("X-Device-ID", "")
     app_version = getattr(request.state, "app_version", None)
     platform = getattr(request.state, "platform", None)
@@ -60,7 +44,6 @@ async def verify_otp(request_body: VerifyOTPRequest, request: Request):
         platform=platform,
     )
     return AuthResponse(data=result)
-
 
 @router.post("/forgot-password/send-otp")
 async def forgot_password_send_otp(request: SendOTPRequest):

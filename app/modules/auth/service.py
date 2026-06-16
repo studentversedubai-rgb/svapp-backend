@@ -1743,7 +1743,7 @@ class AuthService:
     # Account Deletion (permanent)
     # ------------------------------------------------------------------
 
-    async def (self, user_id: str, access_token: str = None) -> None:
+    async def delete_account(self, user_id: str, access_token: str = None) -> None:
         """
         Permanently delete a user account and all associated data.
 
