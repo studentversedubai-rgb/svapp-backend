@@ -19,7 +19,7 @@ from app.modules.payments.router import router as payments_router
 from app.modules.online_deals.router import router as online_deals_router
 from app.modules.app_status.router import router as app_status_router
 from app.core.config import Settings
-from app.core.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware, AppContextMiddleware
+from app.middleware.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware, AppContextMiddleware
 
 
 def create_app() -> FastAPI:
