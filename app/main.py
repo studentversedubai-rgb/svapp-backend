@@ -20,6 +20,7 @@ from app.modules.online_deals.router import router as online_deals_router
 from app.modules.app_status.router import router as app_status_router
 from app.core.config import Settings
 from app.middleware.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware, AppContextMiddleware
+from app.middleware.ratelimit import RateLimitMiddleware
 
 
 def create_app() -> FastAPI:
@@ -88,7 +89,7 @@ def create_app() -> FastAPI:
     # Security Middlewares
     # ================================
     app.add_middleware(SecurityHeadersMiddleware)
-
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestSizeLimitMiddleware, max_upload_size=settings_obj.MAX_UPLOAD_SIZE_BYTES)
     app.add_middleware(LoggingMiddleware)
     app.add_middleware(AppContextMiddleware)
