@@ -156,7 +156,7 @@ class TestDistanceCalculation:
         assert distance == 0.0
     
     def test_distance_dubai_to_abu_dhabi(self, offer_service):
-        """Test distance from Dubai to Abu Dhabi (approx 140km)"""
+        """Test distance from Dubai to Abu Dhabi (approx 123km)"""
         # Dubai coordinates
         dubai_lat, dubai_lon = 25.2048, 55.2708
         # Abu Dhabi coordinates
@@ -167,8 +167,8 @@ class TestDistanceCalculation:
             abudhabi_lat, abudhabi_lon
         )
         
-        # Should be approximately 140km (allow 10km margin)
-        assert 130 <= distance <= 150
+        # Should be approximately 123km
+        assert 120 <= distance <= 130
     
     def test_distance_is_positive(self, offer_service):
         """Test that distance is always positive"""

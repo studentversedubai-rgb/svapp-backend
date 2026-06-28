@@ -14,7 +14,7 @@ Test Coverage:
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import Mock, patch, AsyncMock
 from app.modules.entitlements.service import EntitlementService
@@ -74,8 +74,8 @@ def sample_offer():
         'original_price': 100.00,
         'discounted_price': 80.00,
         'is_active': True,
-        'valid_from': datetime.now().isoformat(),
-        'valid_until': (datetime.now() + timedelta(days=30)).isoformat(),
+        'valid_from': datetime.now(timezone.utc).isoformat(),
+        'valid_until': (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
         'total_claims': 0,
         'max_total_claims': 100
     }
@@ -90,8 +90,8 @@ def sample_entitlement():
         'offer_id': 'offer-123',
         'device_id': 'device-123',
         'state': EntitlementState.ACTIVE.value,
-        'claimed_at': datetime.now().isoformat(),
-        'expires_at': (datetime.now() + timedelta(hours=12)).isoformat()
+        'claimed_at': datetime.now(timezone.utc).isoformat(),
+        'expires_at': (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
     }
 
 
@@ -144,13 +144,13 @@ class TestStateMachine:
     def test_void_window_validation(self, state_machine):
         """Test void window enforcement"""
         # Within void window
-        used_at = datetime.now() - timedelta(hours=1)
+        used_at = datetime.now(timezone.utc) - timedelta(hours=1)
         can_void, reason = state_machine.can_void(EntitlementState.USED, used_at)
         assert can_void
         assert reason is None
         
         # Outside void window
-        used_at = datetime.now() - timedelta(hours=3)
+        used_at = datetime.now(timezone.utc) - timedelta(hours=3)
         can_void, reason = state_machine.can_void(EntitlementState.USED, used_at)
         assert not can_void
         assert "void window expired" in reason.lower()
@@ -185,8 +185,8 @@ class TestClaimEntitlement:
             'user_id': 'user-123',
             'offer_id': 'offer-123',
             'state': EntitlementState.ACTIVE.value,
-            'claimed_at': datetime.now().isoformat(),
-            'expires_at': datetime.now().isoformat()
+            'claimed_at': datetime.now(timezone.utc).isoformat(),
+            'expires_at': datetime.now(timezone.utc).isoformat()
         }]
         entitlement_service.supabase.table.return_value.insert.return_value.execute.return_value = mock_result
         entitlement_service.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = mock_result
@@ -206,6 +206,7 @@ class TestClaimEntitlement:
         """Test daily claim limit enforcement"""
         # Mock daily limit exceeded
         entitlement_service._check_daily_limit = AsyncMock(return_value=False)
+        entitlement_service._get_offer = AsyncMock(return_value=sample_offer)
         
         # Should raise ValueError
         with pytest.raises(ValueError, match="Daily claim limit"):
@@ -372,7 +373,7 @@ class TestVoidLogic:
             'id': 'ent-123',
             'user_id': 'user-123',
             'state': EntitlementState.USED.value,
-            'used_at': (datetime.now() - timedelta(hours=1)).isoformat()
+            'used_at': (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         }
         
         # Mock redemption
@@ -406,26 +407,27 @@ class TestVoidLogic:
             'id': 'ent-123',
             'user_id': 'user-123',
             'state': EntitlementState.USED.value,
-            'used_at': (datetime.now() - timedelta(hours=3)).isoformat()
+            'used_at': (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
         }
         
         entitlement_service._get_entitlement = AsyncMock(return_value=entitlement)
         
-        with pytest.raises(ValueError, match="void window"):
+        with pytest.raises(ValueError, match="[Vv]oid [Ww]indow"):
             await entitlement_service.void_redemption(
                 entitlement_id='ent-123',
                 reason='Too late'
             )
     
     @pytest.mark.asyncio
-    async def test_void_different_day(self, entitlement_service):
+    @patch('app.modules.entitlements.service.state_machine.can_void', return_value=(True, None))
+    async def test_void_different_day(self, mock_can_void, entitlement_service):
         """Test void fails for different day"""
         # Mock entitlement used yesterday
         entitlement = {
             'id': 'ent-123',
             'user_id': 'user-123',
             'state': EntitlementState.USED.value,
-            'used_at': (datetime.now() - timedelta(days=1)).isoformat()
+            'used_at': (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         }
         
         entitlement_service._get_entitlement = AsyncMock(return_value=entitlement)
@@ -453,8 +455,8 @@ class TestFraudPrevention:
         entitlement_service._get_offer = AsyncMock(return_value={
             'id': 'offer-123',
             'is_active': True,
-            'valid_from': datetime.now().isoformat(),
-            'valid_until': (datetime.now() + timedelta(days=1)).isoformat(),
+            'valid_from': datetime.now(timezone.utc).isoformat(),
+            'valid_until': (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
             'total_claims': 0
         })
         entitlement_service._mark_daily_claim = AsyncMock()

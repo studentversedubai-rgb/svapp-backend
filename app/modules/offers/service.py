@@ -88,9 +88,11 @@ class OfferService:
         valid_until = offer.get('valid_until')
         
         if valid_from and isinstance(valid_from, str):
-            valid_from = datetime.fromisoformat(valid_from.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(valid_from.replace('Z', '+00:00'))
+            valid_from = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         if valid_until and isinstance(valid_until, str):
-            valid_until = datetime.fromisoformat(valid_until.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(valid_until.replace('Z', '+00:00'))
+            valid_until = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         
         if valid_from and now < valid_from:
             return False
@@ -106,10 +108,17 @@ class OfferService:
                 current_time = now.time()
                 
                 # Convert string times to time objects if needed
+                from datetime import time
                 if isinstance(time_valid_from, str):
-                    time_valid_from = datetime.strptime(time_valid_from, '%H:%M:%S').time()
+                    try:
+                        time_valid_from = time.fromisoformat(time_valid_from)
+                    except ValueError:
+                        time_valid_from = datetime.strptime(time_valid_from, '%H:%M:%S').time()
                 if isinstance(time_valid_until, str):
-                    time_valid_until = datetime.strptime(time_valid_until, '%H:%M:%S').time()
+                    try:
+                        time_valid_until = time.fromisoformat(time_valid_until)
+                    except ValueError:
+                        time_valid_until = datetime.strptime(time_valid_until, '%H:%M:%S').time()
                 
                 # Check if current time is within valid window
                 # Handle normal vs overnight windows
