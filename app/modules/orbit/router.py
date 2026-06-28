@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import get_current_user
 from app.core.config import Settings
-from app.core.ratelimit import RateLimiter
+from app.middleware.ratelimit import RateLimiter
 from app.core.database import get_supabase_client
 from app.modules.orbit.schemas import (
     OrbitChatRequest,
