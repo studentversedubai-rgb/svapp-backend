@@ -1,0 +1,20 @@
+[
+  {"university_name": "American University in the Emirates (AUE)", "domain": "aue.ae"},
+  {"university_name": "American University in Dubai (AUD)", "domain": "aud.edu"},
+  {"university_name": "American University of Sharjah (AUS)", "domain": "aus.edu"},
+  {"university_name": "British University in Dubai", "domain": "buid.ac.ae"},
+  {"university_name": "Canadian University Dubai", "domain": "cud.ac.ae"},
+  {"university_name": "Curtin University Dubai", "domain": "student.curtin.edu.au"},
+  {"university_name": "Dubai Medical College", "domain": "dmcg.edu"},
+  {"university_name": "Heriot-Watt University Dubai", "domain": "hw.ac.uk"},
+  {"university_name": "Hult International Business School (Dubai)", "domain": "hult.edu"},
+  {"university_name": "Middlesex University Dubai", "domain": "live.mdx.ac.uk"},
+  {"university_name": "Murdoch University Dubai", "domain": "student.murdoch.edu.au"},
+  {"university_name": "Rochester Institute of Technology (RIT Dubai)", "domain": "rit.edu"},
+  {"university_name": "SP Jain School of Global Management (Dubai)", "domain": "spjain.org"},
+  {"university_name": "United Arab Emirates University (UAEU)", "domain": "uaeu.ac.ae"},
+  {"university_name": "University of Birmingham Dubai", "domain": "bham.ac.uk"},
+  {"university_name": "University of Dubai (UD)", "domain": "ud.ac.ae"},
+  {"university_name": "University of Wollongong in Dubai (UOWD)", "domain": "uowmail.edu.au"},
+  {"university_name": "Zayed University (ZU)", "domain": "zu.ac.ae"}
+]
