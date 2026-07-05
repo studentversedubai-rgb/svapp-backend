@@ -893,6 +893,55 @@ class AuthService:
     # Manual Review Signup
     # ------------------------------------------------------------------
 
+    async def get_manual_signup_status(self, email: str) -> Dict[str, Any]:
+        normalized_email = self._normalize_email(email)
+        user_client = get_user_client()
+        if not user_client:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
+
+        try:
+            result = (
+                user_client.table("users")
+                .select("email, verification_status, verification_rejection_reason")
+                .eq("email", normalized_email)
+                .limit(1)
+                .execute()
+            )
+            if not result.data:
+                result = (
+                    user_client.table("users")
+                    .select("email, verification_status, verification_rejection_reason")
+                    .eq("personal_email", normalized_email)
+                    .limit(1)
+                    .execute()
+                )
+        except Exception as e:
+            logger.error(f"Manual signup status lookup failed for {normalized_email}: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error")
+
+        if not result.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No application found for this email.")
+
+        user = result.data[0]
+        verification_status = user.get("verification_status") or "approved"
+        reason = user.get("verification_rejection_reason")
+        messages = {
+            "approved": "Your student application was approved. You can now log in and start using StudentVerse.",
+            "pending_review": "Your account is still under review.",
+            "rejected": "Your account review needs updated documents before you can log in.",
+            "suspended": (
+                "Your account was suspended due to repeated rejections. "
+                "Please email support@studentverse.ae to rectify this."
+            ),
+        }
+
+        return {
+            "email": user.get("email") or normalized_email,
+            "verification_status": verification_status,
+            "message": messages.get(verification_status, messages["pending_review"]),
+            "review_reason": reason,
+        }
+
     async def manual_signup(
         self,
         *,

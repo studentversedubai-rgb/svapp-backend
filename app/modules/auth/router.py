@@ -95,6 +95,12 @@ async def signup_verify_personal_email_otp(request: VerifyPersonalEmailOTPReques
     return {"ok": True, "data": result}
 
 
+@router.get("/manual-signup/status")
+async def manual_signup_status(email: str):
+    result = await auth_service.get_manual_signup_status(email)
+    return {"ok": True, "data": result}
+
+
 @router.post("/manual-signup")
 async def manual_signup(
     request: Request,
