@@ -26,6 +26,12 @@ class VerifyOTPRequest(BaseModel):
             raise ValueError("OTP code must contain only digits")
         return v
 
+class RefreshTokenRequest(BaseModel):
+    """Request to refresh an expired access token"""
+    model_config = ConfigDict(extra='forbid')
+    refresh_token: str = Field(..., description="Supabase refresh token")
+
+
 class ResetPasswordRequest(BaseModel):
     """Request to reset password after OTP verification"""
     model_config = ConfigDict(extra='forbid')

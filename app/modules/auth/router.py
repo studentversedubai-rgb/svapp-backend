@@ -4,7 +4,7 @@ Authentication Router
 Handles OTP-based authentication and Profile Management.
 """
 
-from fastapi import APIRouter, Depends, Request, Form, File, UploadFile
+from fastapi import APIRouter, Depends, Request, Form, File, UploadFile, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.modules.auth.schemas import (
     SendOTPRequest,
@@ -13,6 +13,7 @@ from app.modules.auth.schemas import (
     ProfileUpdateRequest,
     LoginRequest,
     ResetPasswordRequest,
+    RefreshTokenRequest,
     AuthResponse,
     ProfileResponse,
     AnalyticsResponse,
@@ -220,6 +221,32 @@ async def login(request_body: LoginRequest, request: Request):
         platform=platform,
     )
     return AuthResponse(data=result)
+
+@router.post("/refresh")
+async def refresh_token(request_body: RefreshTokenRequest):
+    """
+    Refresh an expired access token using the refresh token.
+    Call this when /auth/me returns 401 — silently get a new token
+    without forcing the user to log in again.
+    """
+    try:
+        from app.core.database import create_fresh_supabase_client
+        client = create_fresh_supabase_client()
+        result = client.auth.refresh_session(request_body.refresh_token)
+        return {
+            "ok": True,
+            "data": {
+                "access_token": result.session.access_token,
+                "refresh_token": result.session.refresh_token,
+                "token_type": "bearer",
+            }
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=401,
+            detail="Session expired. Please log in again."
+        )
+
 
 
 @router.post("/personal-email/send-otp")
