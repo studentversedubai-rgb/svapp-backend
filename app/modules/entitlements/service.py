@@ -532,7 +532,9 @@ class EntitlementService:
             raise ValueError("Entitlement not found")
         
         # Verify the requesting user owns this entitlement
-        if user_id and entitlement['user_id'] != user_id:
+        if not user_id:
+            raise ValueError("Unauthorized: authentication required")
+        if entitlement['user_id'] != user_id:
             raise ValueError("Unauthorized: this entitlement does not belong to you")
 
         # Validate state and void window
