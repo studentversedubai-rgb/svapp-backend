@@ -33,6 +33,49 @@ class LLMPresenter:
         )
         self.model = settings.OPENROUTER_MODEL
     
+    def _sanitize_user_message(self, message: str) -> str:
+        """Sanitize user input to prevent prompt injection."""
+        # 1. Truncate to max 500 chars
+        message = message[:500]
+        
+        # 2. Block known injection phrases
+        injection_patterns = [
+            "ignore previous", "ignore all", "disregard",
+            "system prompt", "you are now", "new instructions",
+            "forget everything", "act as", "jailbreak",
+            "pretend you are", "your true self"
+        ]
+        lower = message.lower()
+        for pattern in injection_patterns:
+            if pattern in lower:
+                logger.warning(f"Prompt injection attempt blocked")
+                return "[message filtered]"
+        
+        return message
+
+    def _validate_llm_output(self, parsed: dict) -> dict:
+        """Check LLM output for injected content before sending to user."""
+        content = parsed.get("content", "")
+        
+        suspicious = [
+            "http://", "https://",           # URLs - LLM should never output links
+            "system prompt", "instructions", # prompt leakage
+            "compromised", "urgent alert",   # social engineering
+            "reset your password", "verify your account",
+            "click here", "visit "
+        ]
+        
+        content_lower = content.lower()
+        for phrase in suspicious:
+            if phrase in content_lower:
+                logger.warning(f"Suspicious LLM output detected and replaced")
+                parsed["content"] = "Here are some great offers for you! 🎯"
+                break
+        
+        return parsed
+
+
+    
 
     def _build_user_prompt(
         self,
@@ -71,6 +114,8 @@ class LLMPresenter:
             offers_context.append(offer_context)
         
         offers_json = json.dumps(offers_context, indent=2)
+
+        message = self._sanitize_user_message(message)
         
         prompt = f"""User Query: "{message}"
 
@@ -129,6 +174,7 @@ Remember: Use ONLY offer IDs from the Context Data above. Return clean JSON only
             if "plans" not in parsed or not isinstance(parsed["plans"], list):
                 parsed["plans"] = []
             
+            parsed = self._validate_llm_output(parsed) 
             logger.info(f"Successfully parsed LLM response with {len(parsed['plans'])} plans")
             return parsed
             
@@ -193,6 +239,7 @@ or
 {"intent": "offers_vague", "needs_retrieval": true, "confidence": 0.85}"""
 
             # Build a simple message for classification
+            user_message = self._sanitize_user_message(user_message)
             user_prompt = f"Classify this message: \"{user_message}\""
             
             # Call LLM with JSON mode if supported

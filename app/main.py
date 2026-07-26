@@ -89,7 +89,7 @@ def create_app() -> FastAPI:
     # Security Middlewares
     # ================================
     app.add_middleware(SecurityHeadersMiddleware)
-    app.add_middleware(RateLimitMiddleware)  # Commented out for now
+    app.add_middleware(RateLimitMiddleware) 
     app.add_middleware(RequestSizeLimitMiddleware, max_upload_size=settings_obj.MAX_UPLOAD_SIZE_BYTES)
     app.add_middleware(LoggingMiddleware)
     app.add_middleware(AppContextMiddleware)
