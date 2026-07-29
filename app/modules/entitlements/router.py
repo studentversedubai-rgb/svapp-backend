@@ -207,7 +207,8 @@ async def confirm_redemption(
         result = await entitlement_service.confirm_redemption(
             entitlement_id=request.entitlement_id,
             total_bill_amount=request.total_bill_amount,
-            discounted_amount=request.discounted_amount
+            discounted_amount=request.discounted_amount,
+            requesting_user_id=current_user['id']
         )
         
         return result

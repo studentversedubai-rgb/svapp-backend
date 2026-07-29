@@ -379,7 +379,8 @@ class EntitlementService:
         self,
         entitlement_id: str,
         total_bill_amount: Decimal,
-        discounted_amount: Optional[Decimal] = None
+        discounted_amount: Optional[Decimal] = None,
+        requesting_user_id: Optional[str] = None
     ) -> ConfirmRedemptionResponse:
         """
         Confirm redemption with amount capture
@@ -405,6 +406,10 @@ class EntitlementService:
         
         if not entitlement:
             raise ValueError("Entitlement not found")
+        
+        # Block self-confirmation: student cannot confirm their own entitlement
+        if requesting_user_id and entitlement['user_id'] == requesting_user_id:
+            raise ValueError("Students cannot confirm their own redemptions")
         
         # Validate state
         state = EntitlementState(entitlement['state'])
