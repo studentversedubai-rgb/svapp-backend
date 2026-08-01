@@ -796,12 +796,21 @@ class AuthService:
         """Verify the signup OTP and issue a 15-minute signup token."""
         normalized = self._normalize_email(personal_email)
         redis_key = f"sv:app:auth:signup_otp:{normalized}"
+        
+        # Check rate limit before verification
+        await self._check_otp_rate_limit(normalized)
+        
         stored_code = redis_manager.get(redis_key)
         if not stored_code:
+            await self._record_failed_otp_attempt(normalized)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
         if stored_code != code:
+            await self._record_failed_otp_attempt(normalized)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
+        # Clear attempts on success
+        await self._clear_otp_attempts(normalized)
+        
         supabase = get_user_client()
         if supabase:
             try:
@@ -911,8 +920,13 @@ class AuthService:
         """Verify the personal-email OTP and persist it on public.users."""
         normalized = self._normalize_email(personal_email)
         redis_key = f"sv:app:auth:personal_email_otp:{user_id}"
+        
+        # Check rate limit before verification
+        await self._check_otp_rate_limit(normalized)
+        
         stored = redis_manager.get(redis_key)
         if not stored:
+            await self._record_failed_otp_attempt(normalized)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
 
         try:
@@ -921,13 +935,18 @@ class AuthService:
             stored_code, stored_email = stored, ""
 
         if stored_email != normalized:
+            await self._record_failed_otp_attempt(normalized)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email mismatch. Please request a new code.",
             )
         if stored_code != code:
+            await self._record_failed_otp_attempt(normalized)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
+        # Clear attempts on success
+        await self._clear_otp_attempts(normalized)
+        
         supabase = get_user_client()
         if not supabase:
             raise HTTPException(
