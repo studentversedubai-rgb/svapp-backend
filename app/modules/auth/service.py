@@ -438,6 +438,78 @@ class AuthService:
 
         return {"message": "OTP sent"}
 
+    # ============================================================
+    # OTP BRUTE FORCE PROTECTION
+    # ============================================================
+
+    def _get_otp_attempts_key(self, email: str) -> str:
+        """Redis key for tracking OTP verification attempts."""
+        return f"sv:app:auth:otp_attempts:{email}"
+
+    def _get_otp_lockout_key(self, email: str) -> str:
+        """Redis key for OTP lockout."""
+        return f"sv:app:auth:otp_lockout:{email}"
+
+    async def _check_otp_rate_limit(self, email: str) -> None:
+        """
+        Check if email is locked out due to too many failed attempts.
+
+        Raises HTTPException if locked out.
+        """
+        lockout_key = self._get_otp_lockout_key(email)
+        lockout_ttl = redis_manager.get(lockout_key)
+
+        if lockout_ttl:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many failed attempts. Try again later."
+            )
+
+    async def _record_failed_otp_attempt(self, email: str) -> None:
+        """
+        Record a failed OTP attempt. Lock out after 5 failures.
+        """
+        attempts_key = self._get_otp_attempts_key(email)
+
+        # Increment attempt counter
+        current_attempts = redis_manager.get(attempts_key)
+
+        MAX_ATTEMPTS = 5
+        LOCKOUT_DURATION = 900  # 15 minutes in seconds
+
+        if current_attempts is None:
+            # First attempt - set to 1 with 5 minute expiry
+            redis_manager.setex(attempts_key, 300, "1")
+            current_attempts = 1
+        else:
+            new_attempts = int(current_attempts) + 1
+            redis_manager.setex(attempts_key, 300, str(new_attempts))
+            current_attempts = new_attempts
+
+        # Lock out after max attempts
+        if current_attempts >= MAX_ATTEMPTS:
+            lockout_key = self._get_otp_lockout_key(email)
+            redis_manager.setex(lockout_key, LOCKOUT_DURATION, "1")
+            logger.warning(f"OTP lockout triggered for email {email} after {current_attempts} failed attempts")
+
+            # Also delete the OTP so it can't be used even if guessed correctly
+            otp_key = f"sv:app:auth:otp:{email}"
+            redis_manager.delete(otp_key)
+
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many failed attempts. Locked out for {LOCKOUT_DURATION // 60} minutes."
+            )
+
+    async def _clear_otp_attempts(self, email: str) -> None:
+        """Clear attempt counter on successful verification."""
+        attempts_key = self._get_otp_attempts_key(email)
+        lockout_key = self._get_otp_lockout_key(email)
+        redis_manager.delete(attempts_key)
+        redis_manager.delete(lockout_key)
+    
+    
+    
     async def verify_otp(
         self,
         email: str,
@@ -455,13 +527,18 @@ class AuthService:
         """
         redis_key = f"sv:app:auth:otp:{email}"
 
+        await self._check_otp_rate_limit(email)
+         
         # 1. Validate OTP from Redis
         stored_code = redis_manager.get(redis_key)
         if not stored_code:
+            await self._record_failed_otp_attempt(email)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
         if stored_code != code:
+            await self._record_failed_otp_attempt(email)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
+        await self._clear_otp_attempts(email)
         supabase = get_user_client()
         if not supabase:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
@@ -573,6 +650,7 @@ class AuthService:
         user_id = str(user["id"])
         otp_code = "".join(random.choices(string.digits, k=6))
         redis_key = f"sv:app:auth:forgot_otp:{user_id}"
+        
         if not redis_manager.setex(redis_key, 300, otp_code):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -594,6 +672,7 @@ class AuthService:
         masked = f"{local[0]}{'*' * max(1, len(local) - 1)}@{domain}" if local else personal_email
         return {"message": "OTP sent", "sent_to": masked}
 
+
     async def forgot_password_verify_otp(self, email: str, code: str) -> Dict[str, Any]:
         """Verify OTP for forgot password and issue a temporary reset token."""
         user = self._resolve_user_by_any_email(email)
@@ -602,13 +681,20 @@ class AuthService:
 
         user_id = str(user["id"])
         redis_key = f"sv:app:auth:forgot_otp:{user_id}"
+
+        await self._check_otp_rate_limit(email)
+
         stored_code = redis_manager.get(redis_key)
 
         if not stored_code:
+            await self._record_failed_otp_attempt(email)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired or invalid")
         if stored_code != code:
+            await self._record_failed_otp_attempt(email)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid access code")
 
+        await self._clear_otp_attempts(email)
+    
         reset_token = str(uuid.uuid4())
         redis_manager.setex(f"sv:app:auth:reset_token:{user_id}", 600, reset_token)
         redis_manager.delete(redis_key)
