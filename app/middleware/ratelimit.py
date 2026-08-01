@@ -289,31 +289,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             
         is_payment = path.startswith("/payments")
         
-        auth_header = request.headers.get("Authorization")
-        user_id = None
-        if auth_header and auth_header.startswith("Bearer "):
-            try:
-                import jwt # Requires python-jose
-                token = auth_header.split(" ")[1]
-                payload = jwt.decode(token, options={"verify_signature": False})
-                user_id = payload.get("sub")
-            except Exception:
-                pass
-                
-        # 1. Auth endpoints strict bounds: 5 req/min/IP
-        # 2. Payment endpoints: 10 req/min/user
-        # 3. Authenticated: 60 req/min/user
-        # 4. Public (no user_id): 30 req/min/IP
+        # Use IP for all rate limiting - no JWT decoding needed here
+        # (JWT verification is handled by actual endpoints, not middleware)
+        ip = self._get_ip(request)
+
         if is_auth_strict:
-            limit, window, identifier = 5, 60, self._get_ip(request)
+            limit, window, identifier = 5, 60, ip
         elif is_payment:
-            limit, window, identifier = 10, 60, user_id or self._get_ip(request)
+            limit, window, identifier = 10, 60, ip
         else:
-            if user_id:
-                limit, window, identifier = 200, 60, user_id
-            else:
-                limit, window, identifier = 30, 60, self._get_ip(request)
-                
+            limit, window, identifier = 60, 60, ip
+
         # We group limits strictly per path to allow limits per endpoint type,
         # but for true strictness we can do per route. Using path is fine.
         key = f"rl:global:{identifier}" if not is_auth_strict else f"rl:auth:{identifier}"
