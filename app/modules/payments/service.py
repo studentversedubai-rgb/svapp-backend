@@ -22,6 +22,10 @@ from app.core.activity import log_activity_event
 from app.modules.payments.schemas import (
     CreateMockOrderRequest,
     CreateMockOrderResponse,
+    CreatePaymentIntentRequest,
+    CreatePaymentIntentResponse,
+    ConfirmPaymentRequest,
+    ConfirmPaymentResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -702,6 +706,8 @@ StudentVerse Team"""
         from fastapi import HTTPException
         
         settings = Settings()
+        if not settings.STRIPE_WEBHOOK_SECRET:
+            raise HTTPException(500, "Stripe webhook secret not configured")
         
         try:
             event = stripe.Webhook.construct_event(
