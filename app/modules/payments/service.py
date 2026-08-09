@@ -10,6 +10,7 @@ import csv
 import io
 import logging
 import os
+import html
 import uuid as uuid_lib
 from datetime import datetime, timezone
 from typing import Optional
@@ -288,8 +289,10 @@ class PaymentService:
         quantity = record.get("quantity", 1)
         total_price = record.get("total_price", 0)
         contact_email = record.get("contact_email", "")
-        contact_name = record.get("contact_name", "")
+        contact_name = html.escape(record.get("contact_name", ""))
         order_id = record.get("id", "")
+        merchant_name = html.escape(merchant_name)
+        ticket_details = html.escape(ticket_details)
 
         html_content = f"""<!DOCTYPE html>
 <html>
