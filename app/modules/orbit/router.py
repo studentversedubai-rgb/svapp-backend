@@ -196,5 +196,5 @@ async def orbit_chat(
         logger.error(f"Error in orbit chat: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Orbit Error: {str(e)}"
+            detail="Failed to generate Orbit response. Please try again."
         )

@@ -1577,7 +1577,7 @@ class AuthService:
             logger.error(f"Registration completion error: {e}")
             if "unique" in str(e).lower() and "email" in str(e).lower():
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already associated with another profile")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update profile: {str(e)}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update profile.")
 
     # ------------------------------------------------------------------
     # Login (email + password — no OTP needed)

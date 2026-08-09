@@ -646,7 +646,7 @@ class EntitlementService:
             logger.error(f"Error fetching entitlements: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            raise ValueError(f"Failed to fetch entitlements: {str(e)}")
+            raise ValueError(f"Failed to fetch entitlements. Please try again.")
     
     async def get_user_savings_summary(self, user_id: str) -> UserSavingsSummary:
         """Get user's total savings summary"""
