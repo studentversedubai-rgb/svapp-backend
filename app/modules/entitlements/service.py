@@ -174,9 +174,6 @@ class EntitlementService:
             'total_claims': offer.get('total_claims', 0) + 1
         }).eq('id', offer_id).execute()
         
-        # Track in Redis for daily limit
-        await self._mark_daily_claim(user_id, offer_id)
-        
         # Log analytics event
         await self._log_analytics_event('offer_claim', {
             'user_id': user_id,
@@ -677,38 +674,39 @@ class EntitlementService:
         offer_id: str,
         max_claims_per_user: Optional[int]
     ) -> bool:
-        """Check if user has reached the offer's per-user claim limit for today"""
-        # Check in Redis first (fast)
-        redis_key = f"{REDIS_PREFIX_DAILY_CLAIM}{user_id}:{offer_id}:{datetime.now().date()}"
-        if self.redis.get(redis_key):
-            return False
-        
-        # Check in database (fallback)
-        today_start = datetime.combine(datetime.now().date(), dt_time(0, 0, 0))
-        today_end = datetime.combine(datetime.now().date(), dt_time(23, 59, 59))
-        
-        result = self.supabase.table('entitlements').select('id').eq(
-            'user_id', user_id
-        ).eq('offer_id', offer_id).gte(
-            'claimed_at', today_start.isoformat()
-        ).lte(
-            'claimed_at', today_end.isoformat()
-        ).neq('state', EntitlementState.VOIDED.value).execute()
-        
+        """
+        Atomically check and record daily claim using Redis INCR.
+        Prevents TOCTOU race condition — no separate mark step needed.
+        """
         if max_claims_per_user is None:
-            return True
+            return True  # No limit set
 
-        return len(result.data) < max_claims_per_user
-    
-    async def _mark_daily_claim(self, user_id: str, offer_id: str):
-        """Mark claim in Redis for daily limit tracking"""
-        redis_key = f"{REDIS_PREFIX_DAILY_CLAIM}{user_id}:{offer_id}:{datetime.now().date()}"
-        # Expire at end of day
-        seconds_until_midnight = (
-            datetime.combine(datetime.now().date() + timedelta(days=1), dt_time(0, 0, 0)) -
-            datetime.now()
-        ).total_seconds()
-        self.redis.setex(redis_key, int(seconds_until_midnight), "1")
+        today = datetime.now().date()
+        redis_key = f"{REDIS_PREFIX_DAILY_CLAIM}{user_id}:{offer_id}:{today}"
+        seconds_until_midnight = int((
+            datetime.combine(today + timedelta(days=1), dt_time(0, 0, 0)) - datetime.now()
+        ).total_seconds())
+
+        if self.redis.redis_client:
+            # Atomic increment — no race condition possible
+            count = self.redis.redis_client.incr(redis_key)
+            if count == 1:
+                # First claim today — set TTL so key auto-expires at midnight
+                self.redis.redis_client.expire(redis_key, seconds_until_midnight)
+            if count > max_claims_per_user:
+                # Over limit - roll back and reject
+                self.redis.redis_client.decr(redis_key)
+                return False
+            return True
+        else:
+            # Memory fallback (dev only) — not fully atomic but acceptable
+            entry = self.redis.memory_store.get(redis_key)
+            current = int(entry[0]) if entry else 0
+            if current >= max_claims_per_user:
+                return False
+            expiry = datetime.now().timestamp() + seconds_until_midnight
+            self.redis.memory_store[redis_key] = (str(current + 1), expiry)
+            return True
     
     async def _calculate_savings(
         self,
