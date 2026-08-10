@@ -6,13 +6,15 @@ Sends confirmation emails via existing Postmark setup and provides
 admin CSV export.
 """
 
+import json
+import hashlib
+import stripe
 import csv
 import io
 import logging
 import os
 import html
 import uuid as uuid_lib
-from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -579,7 +581,6 @@ StudentVerse Team"""
         user_email: str,
         payload: "CreatePaymentIntentRequest",
     ) -> "CreatePaymentIntentResponse":
-        import stripe
         from app.core.config import Settings
         from fastapi import HTTPException
         
@@ -615,6 +616,16 @@ StudentVerse Team"""
         )
         
         visit_date_str = payload.visit_date.isoformat() if payload.visit_date else ""
+        idempotency_data = {
+            "user_id": str(user_id),
+            "ticket_id": str(payload.ticket_id),
+            "quantity": payload.quantity,
+            "visit_date": visit_date_str,
+        }
+        
+        idempotency_key = hashlib.sha256(
+            json.dumps(idempotency_data, sort_keys=True).encode()
+        ).hexdigest()
         
         payment_intent = stripe.PaymentIntent.create(
             amount=amount_in_fils,
@@ -625,7 +636,8 @@ StudentVerse Team"""
                 "quantity": str(payload.quantity),
                 "visit_date": visit_date_str,
                 "user_id": str(user_id),
-            }
+            },
+            idempotency_key=idempotency_key,
         )
         
         record_data = {
