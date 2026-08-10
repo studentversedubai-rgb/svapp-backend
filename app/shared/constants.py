@@ -45,7 +45,7 @@ EMAIL_REGEX = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
 # ENTITLEMENTS & REDEMPTION - PHASE 3
 # ================================
 # QR Token Settings
-QR_PROOF_TOKEN_TTL_SECONDS = 120  # Short-lived proof token (20-30s)
+QR_PROOF_TOKEN_TTL_SECONDS = 60  # Short-lived proof token (60s)
 QR_TOKEN_LENGTH = 32  # Secure random token length
 
 # Redemption Settings
