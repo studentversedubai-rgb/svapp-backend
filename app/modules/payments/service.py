@@ -40,6 +40,34 @@ FROM_ADDRESS = "support@studentverse.app"
 INTERNAL_BOOKINGS_EMAIL = os.getenv("INTERNAL_BOOKINGS_EMAIL", "")
 
 
+
+# ================================
+# CSV FIELD SANITAZATION
+# ================================
+
+def sanitize_csv_field(value) -> str:
+    """
+    Prevent CSV formula injection by adding a single quote prefix.
+
+    Excel/Sheets treat '=formula as plain text, not executable.
+    """
+    if value is None:
+        return ""
+
+    # Convert to string if not already
+    str_value = str(value)
+
+    if not str_value:
+        return ""
+
+    # Check first character for dangerous prefixes
+    dangerous_prefixes = ('=', '+', '-', '@', '\t')
+    if str_value.startswith(dangerous_prefixes):
+        return "'" + str_value
+
+    return str_value
+
+
 class PaymentService:
     """Handles mock payment order creation, email notifications, and CSV export"""
 
@@ -136,6 +164,7 @@ class PaymentService:
             message="Mock payment successful. This is a test flow — no real payment was processed.",
         )
 
+    
     # ================================
     # ADMIN CSV EXPORT
     # ================================
@@ -210,9 +239,9 @@ class PaymentService:
                     "booked_at": row.get("created_at", ""),
                     "merchant_name": row.get("merchant_name", ""),
                     "ticket_type": row.get("ticket_type", ""),
-                    "contact_name": row.get("contact_name", ""),
-                    "contact_email": row.get("contact_email", ""),
-                    "contact_phone": row.get("contact_phone", ""),
+                    "contact_name": sanitize_csv_field(row.get("contact_name", "")),
+                    "contact_email": sanitize_csv_field(row.get("contact_email", "")),
+                    "contact_phone": sanitize_csv_field(row.get("contact_phone", "")),
                     "visit_date": row.get("visit_date", ""),
                     "visit_time": row.get("visit_time", ""),
                     "quantity": row.get("quantity", ""),
@@ -220,7 +249,7 @@ class PaymentService:
                     "total_price": row.get("total_price", ""),
                     "stripe_payment_status": row.get("stripe_payment_status", ""),
                     "order_status": row.get("status", ""),
-                    "special_requests": row.get("special_requests", ""),
+                    "special_requests": sanitize_csv_field(row.get("special_requests", "")),
                     "e_ticket_url": row.get("e_ticket_url", ""),
                     "fulfilled_at": row.get("fulfilled_at", ""),
                     "internal_notes": row.get("internal_notes", ""),
