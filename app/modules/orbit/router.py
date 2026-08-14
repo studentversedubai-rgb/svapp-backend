@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import get_current_user
 from app.core.config import Settings
 from app.middleware.ratelimit import RateLimiter
+from app.modules.orbit.conversation import conversation_manager
 from app.core.database import get_supabase_client
 from app.modules.orbit.schemas import (
     OrbitChatRequest,
@@ -198,3 +199,18 @@ async def orbit_chat(
             status_code=500,
             detail="Failed to generate Orbit response. Please try again."
         )
+
+
+@router.delete("/conversation/{session_id}")
+async def delete_conversation_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a conversation session history from Redis"""
+    success = conversation_manager.clear_session(
+        user_id=current_user["id"],
+        session_id=session_id,
+    )
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete conversation session")
+    return {"ok": True, "message": "Conversation session deleted successfully"}
