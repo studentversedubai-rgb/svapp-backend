@@ -581,10 +581,10 @@ StudentVerse Team"""
         user_email: str,
         payload: "CreatePaymentIntentRequest",
     ) -> "CreatePaymentIntentResponse":
-        from app.core.config import Settings
         from fastapi import HTTPException
+        from app.core.config import get_settings
+        settings = get_settings()
         
-        settings = Settings()
         stripe.api_key = settings.STRIPE_SECRET_KEY
         
         if not stripe.api_key:
@@ -681,10 +681,11 @@ StudentVerse Team"""
         payload: "ConfirmPaymentRequest",
     ) -> "ConfirmPaymentResponse":
         import stripe
-        from app.core.config import Settings
         from fastapi import HTTPException
+        from app.core.config import get_settings
+
+        settings = get_settings()
         
-        settings = Settings()
         stripe.api_key = settings.STRIPE_SECRET_KEY
         
         record_result = self.supabase.table("ticket_records").select("*, ticket:tickets(merchant_name, ticket_details)").eq("id", str(payload.record_id)).execute()
@@ -746,10 +747,11 @@ StudentVerse Team"""
 
     async def handle_webhook(self, payload: bytes, sig_header: str):
         import stripe
-        from app.core.config import Settings
         from fastapi import HTTPException
+        from app.core.config import get_settings
+
+        settings = get_settings()  
         
-        settings = Settings()
         if not settings.STRIPE_WEBHOOK_SECRET:
             raise HTTPException(500, "Stripe webhook secret not configured")
         

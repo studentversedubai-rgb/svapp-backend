@@ -8,6 +8,7 @@ NO BUSINESS LOGIC - Structure only
 """
 
 from pydantic_settings import BaseSettings
+from functools import lru_cache
 from typing import List
 
 
@@ -108,6 +109,12 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
-# Global settings instance
-# TODO: Initialize this properly in main.py
-# settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    """
+    Get application settings using LRU cache for performance.
+    Settings are loaded only once on first call.
+    """
+    return Settings()
+
+settings = get_settings()
