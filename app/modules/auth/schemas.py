@@ -6,6 +6,7 @@ Pydantic models for authentication requests and responses.
 
 import re
 from typing import Optional, Any, Dict
+from urllib.parse import urlparse
 from pydantic import BaseModel, EmailStr, Field, field_validator, HttpUrl, ConfigDict
 
 def validate_password_complexity(v: str) -> str:
@@ -171,8 +172,16 @@ class RegisterRequest(BaseModel):
         if v is None:
             return v
         v = v.strip()
-        if not re.match(r"^https?://", v):
-            raise ValueError("Profile picture URL must start with http:// or https://")
+        try:
+            parsed = urlparse(v)
+            if parsed.scheme not in ("http", "https"):
+                raise ValueError("Profile picture URL must use http or https")
+            if not parsed.netloc:
+                raise ValueError("Profile picture URL must have a valid domain")
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("Profile picture URL is not valid")
         return v
 
 class ProfileUpdateRequest(BaseModel):
