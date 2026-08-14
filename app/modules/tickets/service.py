@@ -4,6 +4,8 @@ Tickets Service
 Business logic for fetching tickets and ticket records from Supabase.
 """
 
+from google.cloud import bigquery
+from google.cloud import bigquery
 import logging
 from datetime import date, datetime, timezone
 from typing import List, Optional
@@ -56,8 +58,14 @@ class TicketService:
             )
 
             if merchant_name:
-                # Case-insensitive filter using ilike
-                query = query.ilike("merchant_name", f"%{merchant_name}%")
+                # Escape LIKE wildcard special characters (\, %, _)
+                safe_name = (
+                    merchant_name
+                    .replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                query = query.ilike("merchant_name", f"%{safe_name}%")
 
             result = query.execute()
 
