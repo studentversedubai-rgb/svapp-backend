@@ -214,6 +214,31 @@ class OfferService:
             Paginated offers response
         """
         try:
+            # Dine-in venues live in a deliberately separate table from normal
+            # merchants/online deals, but are normalized into this customer feed.
+            dine_in_result = self.supabase.table("dine_in_merchants").select("*").eq("is_active", True).execute()
+            dine_in_offers = [
+                {
+                    "id": venue["id"],
+                    "title": venue["offer_title"],
+                    "description": venue.get("offer_description") or "Show your StudentVerse ID at the counter.",
+                    "merchant": {
+                        "id": venue["id"], "name": venue["name"], "logo_url": venue.get("logo_url"),
+                        "latitude": venue.get("latitude"), "longitude": venue.get("longitude"),
+                        "color": venue.get("color"), "address": venue.get("address"), "dine_in": True,
+                        "is_active": venue.get("is_active", False),
+                    },
+                    "category": {"id": "dine-in", "name": "Dine-In", "slug": "dine-in", "sort_order": 0},
+                    "offer_type": "percentage",
+                    "redemption_mode": "dine_in",
+                    "discount_value": str(venue["discount_percentage"]),
+                    "original_price": None, "discounted_price": None, "image_url": venue.get("logo_url"),
+                    "valid_from": venue["valid_from"], "valid_until": venue["valid_until"],
+                    "is_active": venue.get("is_active", False), "is_featured": False,
+                    "created_at": venue["created_at"], "max_claims_per_user": None,
+                }
+                for venue in (dine_in_result.data or [])
+            ]
             # Build query for eligible offers
             query = self.supabase.table("offers").select(
                 "*, merchant:merchants(*), category:categories(*)"
@@ -229,7 +254,7 @@ class OfferService:
             # Execute query
             result = query.execute()
             
-            if not result.data:
+            if not result.data and not dine_in_offers:
                 return PaginatedOffersResponse(
                     items=[],
                     total=0,
@@ -242,7 +267,7 @@ class OfferService:
             active_offers = [
                 offer for offer in result.data
                 if self._merchant_is_active(offer)
-            ]
+            ] + [offer for offer in dine_in_offers if self._merchant_is_active(offer)]
 
             # Filter offers by time and day eligibility
             eligible_offers = [
@@ -661,6 +686,7 @@ class OfferService:
             merchant=MerchantBasic(**merchant_data) if merchant_data else None,
             category=CategoryResponse(**category_data) if category_data else None,
             offer_type=offer['offer_type'],
+            redemption_mode=offer.get('redemption_mode', 'online'),
             discount_value=offer.get('discount_value'),
             original_price=offer.get('original_price'),
             discounted_price=offer.get('discounted_price'),
