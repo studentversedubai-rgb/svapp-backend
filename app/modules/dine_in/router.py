@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from app.core.database import get_user_client
+from app.core.database import get_supabase_client
 from app.core.security import get_optional_user
 
 router = APIRouter()
@@ -25,7 +25,12 @@ async def resolve_venue(
     current_user: Optional[dict] = Depends(get_optional_user),
 ):
     """Resolve a printed counter-card QR payload to its active dine-in offer."""
-    db = get_user_client()
+    # Counter QR tokens must not be readable through a public RLS policy.
+    # This server-side route uses the service-role client after the request has
+    # been authenticated/validated by its dependency.
+    db = get_supabase_client()
+    if not db:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection unavailable.")
     venue_result = db.table("dine_in_merchants").select("*").eq("qr_token", request.token).maybe_single().execute()
     venue = venue_result.data
     if not venue or not venue.get("is_active"):

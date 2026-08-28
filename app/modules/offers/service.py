@@ -9,7 +9,7 @@ import math
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
-from app.core.database import get_user_client
+from app.core.database import get_user_client, get_supabase_client
 from app.modules.offers.schemas import (
     OfferListItem, OfferDetail, MerchantBasic, MerchantDetail,
     CategoryResponse, PaginatedOffersResponse
@@ -216,7 +216,10 @@ class OfferService:
         try:
             # Dine-in venues live in a deliberately separate table from normal
             # merchants/online deals, but are normalized into this customer feed.
-            dine_in_result = self.supabase.table("dine_in_merchants").select("*").eq("is_active", True).execute()
+            admin_db = get_supabase_client()
+            if not admin_db:
+                raise RuntimeError("Database connection unavailable")
+            dine_in_result = admin_db.table("dine_in_merchants").select("*").eq("is_active", True).execute()
             dine_in_offers = [
                 {
                     "id": venue["id"],

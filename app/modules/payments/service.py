@@ -6,12 +6,15 @@ Sends confirmation emails via existing Postmark setup and provides
 admin CSV export.
 """
 
+import json
+import hashlib
+import stripe
 import csv
 import io
 import logging
 import os
+import html
 import uuid as uuid_lib
-from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -22,6 +25,10 @@ from app.core.activity import log_activity_event
 from app.modules.payments.schemas import (
     CreateMockOrderRequest,
     CreateMockOrderResponse,
+    CreatePaymentIntentRequest,
+    CreatePaymentIntentResponse,
+    ConfirmPaymentRequest,
+    ConfirmPaymentResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +40,34 @@ logger = logging.getLogger(__name__)
 POSTMARK_API_KEY = os.getenv("POSTMARK_API_KEY", "")
 FROM_ADDRESS = "support@studentverse.app"
 INTERNAL_BOOKINGS_EMAIL = os.getenv("INTERNAL_BOOKINGS_EMAIL", "")
+
+
+
+# ================================
+# CSV FIELD SANITAZATION
+# ================================
+
+def sanitize_csv_field(value) -> str:
+    """
+    Prevent CSV formula injection by adding a single quote prefix.
+
+    Excel/Sheets treat '=formula as plain text, not executable.
+    """
+    if value is None:
+        return ""
+
+    # Convert to string if not already
+    str_value = str(value)
+
+    if not str_value:
+        return ""
+
+    # Check first character for dangerous prefixes
+    dangerous_prefixes = ('=', '+', '-', '@', '\t')
+    if str_value.startswith(dangerous_prefixes):
+        return "'" + str_value
+
+    return str_value
 
 
 class PaymentService:
@@ -131,6 +166,7 @@ class PaymentService:
             message="Mock payment successful. This is a test flow — no real payment was processed.",
         )
 
+    
     # ================================
     # ADMIN CSV EXPORT
     # ================================
@@ -205,9 +241,9 @@ class PaymentService:
                     "booked_at": row.get("created_at", ""),
                     "merchant_name": row.get("merchant_name", ""),
                     "ticket_type": row.get("ticket_type", ""),
-                    "contact_name": row.get("contact_name", ""),
-                    "contact_email": row.get("contact_email", ""),
-                    "contact_phone": row.get("contact_phone", ""),
+                    "contact_name": sanitize_csv_field(row.get("contact_name", "")),
+                    "contact_email": sanitize_csv_field(row.get("contact_email", "")),
+                    "contact_phone": sanitize_csv_field(row.get("contact_phone", "")),
                     "visit_date": row.get("visit_date", ""),
                     "visit_time": row.get("visit_time", ""),
                     "quantity": row.get("quantity", ""),
@@ -215,7 +251,7 @@ class PaymentService:
                     "total_price": row.get("total_price", ""),
                     "stripe_payment_status": row.get("stripe_payment_status", ""),
                     "order_status": row.get("status", ""),
-                    "special_requests": row.get("special_requests", ""),
+                    "special_requests": sanitize_csv_field(row.get("special_requests", "")),
                     "e_ticket_url": row.get("e_ticket_url", ""),
                     "fulfilled_at": row.get("fulfilled_at", ""),
                     "internal_notes": row.get("internal_notes", ""),
@@ -284,8 +320,10 @@ class PaymentService:
         quantity = record.get("quantity", 1)
         total_price = record.get("total_price", 0)
         contact_email = record.get("contact_email", "")
-        contact_name = record.get("contact_name", "")
+        contact_name = html.escape(record.get("contact_name", ""))
         order_id = record.get("id", "")
+        merchant_name = html.escape(merchant_name)
+        ticket_details = html.escape(ticket_details)
 
         html_content = f"""<!DOCTYPE html>
 <html>
@@ -543,11 +581,10 @@ StudentVerse Team"""
         user_email: str,
         payload: "CreatePaymentIntentRequest",
     ) -> "CreatePaymentIntentResponse":
-        import stripe
-        from app.core.config import Settings
         from fastapi import HTTPException
+        from app.core.config import get_settings
+        settings = get_settings()
         
-        settings = Settings()
         stripe.api_key = settings.STRIPE_SECRET_KEY
         
         if not stripe.api_key:
@@ -579,6 +616,16 @@ StudentVerse Team"""
         )
         
         visit_date_str = payload.visit_date.isoformat() if payload.visit_date else ""
+        idempotency_data = {
+            "user_id": str(user_id),
+            "ticket_id": str(payload.ticket_id),
+            "quantity": payload.quantity,
+            "visit_date": visit_date_str,
+        }
+        
+        idempotency_key = hashlib.sha256(
+            json.dumps(idempotency_data, sort_keys=True).encode()
+        ).hexdigest()
         
         payment_intent = stripe.PaymentIntent.create(
             amount=amount_in_fils,
@@ -589,7 +636,8 @@ StudentVerse Team"""
                 "quantity": str(payload.quantity),
                 "visit_date": visit_date_str,
                 "user_id": str(user_id),
-            }
+            },
+            idempotency_key=idempotency_key,
         )
         
         record_data = {
@@ -633,10 +681,11 @@ StudentVerse Team"""
         payload: "ConfirmPaymentRequest",
     ) -> "ConfirmPaymentResponse":
         import stripe
-        from app.core.config import Settings
         from fastapi import HTTPException
+        from app.core.config import get_settings
+
+        settings = get_settings()
         
-        settings = Settings()
         stripe.api_key = settings.STRIPE_SECRET_KEY
         
         record_result = self.supabase.table("ticket_records").select("*, ticket:tickets(merchant_name, ticket_details)").eq("id", str(payload.record_id)).execute()
@@ -698,10 +747,13 @@ StudentVerse Team"""
 
     async def handle_webhook(self, payload: bytes, sig_header: str):
         import stripe
-        from app.core.config import Settings
         from fastapi import HTTPException
+        from app.core.config import get_settings
+
+        settings = get_settings()  
         
-        settings = Settings()
+        if not settings.STRIPE_WEBHOOK_SECRET:
+            raise HTTPException(500, "Stripe webhook secret not configured")
         
         try:
             event = stripe.Webhook.construct_event(

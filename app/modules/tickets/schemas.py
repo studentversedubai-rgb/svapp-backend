@@ -36,6 +36,31 @@ class TicketResponse(BaseModel):
         from_attributes = True
 
 
+class PublicTicketResponse(BaseModel):
+    """Public ticket — omits sensitive pricing fields (our_price, market_price_adult)."""
+    id: UUID
+    merchant_name: str
+    ticket_details: str
+    pricing_period_start: date
+    pricing_period_end: date
+    is_active: bool
+    image_url: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    location: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+
+class PublicTicketListResponse(BaseModel):
+    """List of public tickets — no pricing data."""
+    items: List[PublicTicketResponse]
+    total: int
+
+
+
 class TicketListResponse(BaseModel):
     """List of tickets response"""
     items: List[TicketResponse]

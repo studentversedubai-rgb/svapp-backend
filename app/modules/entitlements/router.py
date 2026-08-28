@@ -82,7 +82,7 @@ async def claim_entitlement(
         logger.error(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to claim entitlement: {str(e)}"
+            detail="Failed to claim entitlement. Please try again."
         )
 
 

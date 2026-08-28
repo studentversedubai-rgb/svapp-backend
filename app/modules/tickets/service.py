@@ -56,8 +56,14 @@ class TicketService:
             )
 
             if merchant_name:
-                # Case-insensitive filter using ilike
-                query = query.ilike("merchant_name", f"%{merchant_name}%")
+                # Escape LIKE wildcard special characters (\, %, _)
+                safe_name = (
+                    merchant_name
+                    .replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                query = query.ilike("merchant_name", f"%{safe_name}%")
 
             result = query.execute()
 

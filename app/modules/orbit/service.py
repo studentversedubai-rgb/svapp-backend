@@ -212,7 +212,7 @@ class OrbitService:
                 content="Oops! Something went wrong on my end. Can you try asking that again? 😅",
                 plans=[],
                 session_id=session_id or str(uuid.uuid4()),
-                metadata={"error": str(e)}
+                metadata={}
             )
     
     def _validate_offer_ids(

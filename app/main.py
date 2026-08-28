@@ -81,8 +81,8 @@ def create_app() -> FastAPI:
             "http://localhost:4173",            # local Vite preview server
         ],
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Device-ID", "X-App-Version", "X-Platform"],
     )
 
     settings_obj = Settings() # Validate environments immediately on boot

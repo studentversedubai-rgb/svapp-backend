@@ -6,7 +6,20 @@ Pydantic models for authentication requests and responses.
 
 import re
 from typing import Optional, Any, Dict
+from urllib.parse import urlparse
 from pydantic import BaseModel, EmailStr, Field, field_validator, HttpUrl, ConfigDict
+
+def validate_password_complexity(v: str) -> str:
+    if not re.search(r'[A-Z]', v):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not re.search(r'[a-z]', v):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not re.search(r'[0-9]', v):
+        raise ValueError("Password must contain at least one number")
+    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+        raise ValueError("Password must contain at least one special character")
+    return v
+
 
 class SendOTPRequest(BaseModel):
     """Request to send OTP"""
@@ -38,6 +51,12 @@ class ResetPasswordRequest(BaseModel):
     email: EmailStr = Field(..., description="University or personal email used to initiate reset")
     reset_token: str = Field(..., description="Reset token obtained from verifying forgot-password OTP")
     new_password: str = Field(..., min_length=8, max_length=100, description="New password")
+
+    @field_validator("new_password")
+    @classmethod
+    def check_new_password(cls, v: str) -> str:
+        return validate_password_complexity(v)
+
 
 
 class SendPersonalEmailOTPRequest(BaseModel):
@@ -82,6 +101,13 @@ class RegisterRequest(BaseModel):
     device_id: Optional[str] = Field(None, min_length=5, max_length=255, description="Device ID for single device login")
     password: Optional[str] = Field(None, min_length=8, description="User chosen password to set in Supabase Auth")
 
+    @field_validator("password")
+    @classmethod
+    def check_password(cls, v) -> str:
+        if v is None:
+            return v
+        return validate_password_complexity(v)
+    
     @field_validator("name", "first_name", "last_name", "nationality", "university", "student_id", mode="before")
     @classmethod
     def strip_html_and_scripts(cls, v: Optional[str]) -> Optional[str]:
@@ -146,8 +172,16 @@ class RegisterRequest(BaseModel):
         if v is None:
             return v
         v = v.strip()
-        if not re.match(r"^https?://", v):
-            raise ValueError("Profile picture URL must start with http:// or https://")
+        try:
+            parsed = urlparse(v)
+            if parsed.scheme not in ("http", "https"):
+                raise ValueError("Profile picture URL must use http or https")
+            if not parsed.netloc:
+                raise ValueError("Profile picture URL must have a valid domain")
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("Profile picture URL is not valid")
         return v
 
 class ProfileUpdateRequest(BaseModel):

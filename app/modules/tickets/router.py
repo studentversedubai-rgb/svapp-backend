@@ -14,11 +14,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.core.security import get_current_user
 from app.modules.tickets.service import TicketService
 from app.modules.tickets.schemas import (
-    TicketListResponse,
     TicketResponse,
     TicketRecordListResponse,
     TicketRecordResponse,
     UpdateRecordStatusRequest,
+    PublicTicketListResponse, 
 )
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ def _require_admin(current_user: dict) -> None:
 
 @router.get(
     "",
-    response_model=TicketListResponse,
+    response_model=PublicTicketListResponse,
     summary="List active tickets",
     description=(
         "Returns all tickets where is_active=true and today's date falls within "

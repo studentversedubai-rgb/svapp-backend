@@ -30,19 +30,30 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         self.max_upload_size = max_upload_size
 
     async def dispatch(self, request: Request, call_next):
-        if request.headers.get('content-length'):
+        # Fast path: check Content-Length header
+        content_length_header = request.headers.get('content-length')
+        if content_length_header:
             try:
-                content_length = int(request.headers['content-length'])
-            except ValueError:
-                content_length = 0
-            if content_length > self.max_upload_size:
-                max_mb = max(1, round(self.max_upload_size / (1024 * 1024)))
-                return JSONResponse(
+                if int(content_length_header) > self.max_upload_size:
+                    max_mb = max(1, round(self.max_upload_size / (1024 * 1024)))
+                    return JSONResponse(
                     status_code=413,
                     content={"ok": False, "error": f"Request entity too large. Max allowed size is {max_mb}MB."}
                 )
-        response = await call_next(request)
-        return response
+            except ValueError:
+                pass
+
+        # Safety net: check actual body size (catches chunked transfer bypass)
+        body = await request.body()
+        if len(body) > self.max_upload_size:
+            max_mb = max(1, round(self.max_upload_size / (1024 * 1024)))
+            return JSONResponse(
+                status_code=413,
+                content={"ok": False, "error": f"Request entity too large. Max allowed size is {max_mb}MB."}
+            )
+
+        return await call_next(request)
+
 
 # App-version / platform capture middleware
 # Reads X-App-Version and X-Platform headers (sent by the mobile app on
