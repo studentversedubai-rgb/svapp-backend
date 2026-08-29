@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from app.core.database import supabase_client
-from app.core.security import get_current_user_id
+# Fixed imports: core/database exports get_supabase_client() and core/security exports get_current_user()
+from app.core.database import get_supabase_client
+from app.core.security import get_current_user
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,26 +26,31 @@ class PushTokenUpdate(BaseModel):
 @router.post("")
 async def register_push_token(
     payload: PushTokenRegister,
-    current_user_id: str = Depends(get_current_user_id),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Register or update a push notification token for a user.
     Frontend sends: { userId, token, platform }
     """
     try:
+        current_user_id = str(current_user.get("id"))
         # Verify the requesting user matches the userId in payload
         if payload.userId != current_user_id:
             raise HTTPException(status_code=403, detail="Cannot register token for another user")
 
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status_code=500, detail="Database connection unavailable")
+
         # Check if token already exists for this user
-        response = supabase_client.from_("user_push_tokens").select("id").eq(
+        response = supabase.table("user_push_tokens").select("id").eq(
             "user_id", payload.userId
         ).eq("expo_push_token", payload.token).execute()
 
         if response.data and len(response.data) > 0:
             # Token exists, update it
             token_id = response.data[0]["id"]
-            update_response = supabase_client.from_("user_push_tokens").update(
+            update_response = supabase.table("user_push_tokens").update(
                 {
                     "device_platform": payload.platform,
                     "is_enabled": True,
@@ -52,7 +58,7 @@ async def register_push_token(
                 }
             ).eq("id", token_id).execute()
 
-            if update_response.error:
+            if getattr(update_response, "error", None):
                 logger.error(f"Error updating push token: {update_response.error}")
                 raise HTTPException(status_code=500, detail="Failed to update push token")
 
@@ -60,7 +66,7 @@ async def register_push_token(
             return {"success": True, "message": "Push token updated", "tokenId": token_id}
         else:
             # Create new token entry
-            insert_response = supabase_client.from_("user_push_tokens").insert(
+            insert_response = supabase.table("user_push_tokens").insert(
                 {
                     "user_id": payload.userId,
                     "expo_push_token": payload.token,
@@ -69,7 +75,7 @@ async def register_push_token(
                 }
             ).execute()
 
-            if insert_response.error:
+            if getattr(insert_response, "error", None):
                 logger.error(f"Error inserting push token: {insert_response.error}")
                 raise HTTPException(status_code=500, detail="Failed to register push token")
 
@@ -92,17 +98,22 @@ async def register_push_token(
 async def update_push_token(
     user_id: str,
     payload: PushTokenUpdate,
-    current_user_id: str = Depends(get_current_user_id),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Update push token settings for a user.
     """
     try:
+        current_user_id = str(current_user.get("id"))
         if user_id != current_user_id:
             raise HTTPException(status_code=403, detail="Cannot update token for another user")
 
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status_code=500, detail="Database connection unavailable")
+
         # Update the token
-        response = supabase_client.from_("user_push_tokens").update(
+        response = supabase.table("user_push_tokens").update(
             {
                 "expo_push_token": payload.token,
                 "device_platform": payload.platform,
@@ -111,7 +122,7 @@ async def update_push_token(
             }
         ).eq("user_id", user_id).execute()
 
-        if response.error:
+        if getattr(response, "error", None):
             logger.error(f"Error updating push token: {response.error}")
             raise HTTPException(status_code=500, detail="Failed to update push token")
 
@@ -127,21 +138,26 @@ async def update_push_token(
 @router.delete("/{user_id}")
 async def delete_push_token(
     user_id: str,
-    current_user_id: str = Depends(get_current_user_id),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Delete push tokens for a user (disable notifications).
     """
     try:
+        current_user_id = str(current_user.get("id"))
         if user_id != current_user_id:
             raise HTTPException(status_code=403, detail="Cannot delete token for another user")
 
+        supabase = get_supabase_client()
+        if not supabase:
+            raise HTTPException(status_code=500, detail="Database connection unavailable")
+
         # Soft delete by disabling
-        response = supabase_client.from_("user_push_tokens").update(
+        response = supabase.table("user_push_tokens").update(
             {"is_enabled": False, "updated_at": "now()"}
         ).eq("user_id", user_id).execute()
 
-        if response.error:
+        if getattr(response, "error", None):
             logger.error(f"Error deleting push token: {response.error}")
             raise HTTPException(status_code=500, detail="Failed to delete push token")
 
