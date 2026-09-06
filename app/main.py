@@ -20,6 +20,7 @@ from app.modules.online_deals.router import router as online_deals_router
 from app.modules.app_status.router import router as app_status_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.dine_in.router import router as dine_in_router
+from app.modules.baitna.router import router as baitna_router
 from app.core.config import Settings
 from app.middleware.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware, AppContextMiddleware
 from app.middleware.ratelimit import RateLimitMiddleware
@@ -122,6 +123,7 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content={"ok": False, "error": detail},
+            headers=getattr(exc, "headers", None),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -166,6 +168,8 @@ def create_app() -> FastAPI:
     app.include_router(app_status_router, prefix="/app-status", tags=["App Status"])
     app.include_router(notifications_router, tags=["Notifications"])
     app.include_router(dine_in_router, prefix="/dine-in", tags=["Dine-In"])
+    app.include_router(baitna_router, prefix="/baitna", tags=["Baitna"])
+
     
     from app.modules.payments.router import webhook_router
     app.include_router(webhook_router, prefix="/stripe", tags=["Stripe Webhook"])

@@ -49,6 +49,17 @@ class EmailService:
             raise Exception(f"Postmark error [{type(e).__name__}]: {str(e)}")
 
     @staticmethod
+    def send_text_email(email: str, subject: str, body: str) -> bool:
+        """
+        Public entry point for a plain-text send with a caller-supplied body.
+
+        Every other method here wraps a fixed template; modules that compose their
+        own copy (Baitna) use this rather than reaching for the underscore name.
+        Raises on failure, like the rest of the service.
+        """
+        return EmailService._send_text_email(email, subject, body)
+
+    @staticmethod
     def send_otp_email(email: str, otp_code: str, expiry_minutes: int = 5) -> bool:
         """
         Send OTP verification email via Postmark.
