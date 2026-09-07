@@ -57,6 +57,13 @@ REDIS_PREFIX_QR_TOKEN = "sv:app:redeem:token:"  # QR proof tokens
 REDIS_PREFIX_DAILY_CLAIM = "sv:app:claim:daily:"  # Daily usage tracking
 REDIS_PREFIX_OTP = "sv:app:otp:"  # OTP storage (existing)
 
+REDIS_PREFIX_SHIFT_SESSION = "sv:app:merchant:shift:"
+REDIS_PREFIX_BACKUP_CODE = "sv:app:redeem:backup:" # backup codes for QR redemption 
+
+SHIFT_SESSION_TTL_SECONDS = 43200 # 12 hours
+BACKUP_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXY23456789"
+BACKUP_CODE_LENGTH = 4
+
 # ================================
 # SV ORBIT
 # ================================

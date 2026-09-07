@@ -45,12 +45,22 @@ class GenerateProofRequest(BaseModel):
 class GenerateProofResponse(BaseModel):
     """Response with proof token for QR code"""
     success: bool = True
+    backup_code: str
     proof_token: str = Field(..., description="Short-lived token for QR code")
     expires_at: datetime = Field(..., description="Token expiry timestamp")
     ttl_seconds: int = Field(..., description="Time to live in seconds")
     
     class Config:
         from_attributes = True
+
+class EntitlementStatusResponse(BaseModel):
+    state: str  # raw DB state
+    ui_state: str  # "amber" | "green" | "inactive"
+    confirmed_at: Optional[datetime] = None
+    total_bill: Optional[Decimal] = None
+    discount_amount: Optional[Decimal] = None
+    amount_to_pay: Optional[Decimal] = None
+    savings: Optional[Decimal] = None
 
 
 # ================================

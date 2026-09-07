@@ -37,7 +37,10 @@ from app.shared.constants import (
     QR_PROOF_TOKEN_TTL_SECONDS,
     QR_TOKEN_LENGTH,
     REDIS_PREFIX_QR_TOKEN,
-    REDIS_PREFIX_DAILY_CLAIM
+    REDIS_PREFIX_DAILY_CLAIM,
+    BACKUP_CODE_ALPHABET,
+    BACKUP_CODE_LENGTH,
+    REDIS_PREFIX_BACKUP_CODE
 )
 
 logger = logging.getLogger(__name__)
@@ -242,11 +245,24 @@ class EntitlementService:
         if not can_generate:
             raise ValueError(reason)
         
-        # Generate secure random token
+        # Generate secure random token for QR code
         proof_token = secrets.token_urlsafe(QR_TOKEN_LENGTH)
-        
+
+        # Generate 4-character backup code with up to 5 collision retries
+        backup_code = None
+        for _ in range(5):
+            candidate = "".join(secrets.choice(BACKUP_CODE_ALPHABET) for _ in range(BACKUP_CODE_LENGTH))
+            if not self.redis.get(f"{REDIS_PREFIX_BACKUP_CODE}{candidate}"):
+                backup_code = candidate
+                break
+
+        if not backup_code:
+            raise ValueError("Failed to generate a unique backup code. Please try again.")
+
         # Store in Redis with TTL
         redis_key = f"{REDIS_PREFIX_QR_TOKEN}{proof_token}"
+        backup_key = f"{REDIS_PREFIX_BACKUP_CODE}{backup_code}"
+        
         token_data = {
             'entitlement_id': entitlement_id,
             'user_id': user_id,
@@ -254,24 +270,25 @@ class EntitlementService:
             'device_id': entitlement.get('device_id'),
             'created_at': datetime.now().isoformat()
         }
-        
-        # Store as JSON string
+
+        # Store both QR token and backup code in Redis with the same TTL
         import json
-        self.redis.setex(
-            redis_key,
-            QR_PROOF_TOKEN_TTL_SECONDS,
-            json.dumps(token_data)
-        )
-        
+        serialized_data = json.dumps(token_data)
+        self.redis.setex(redis_key, QR_PROOF_TOKEN_TTL_SECONDS, serialized_data)
+        self.redis.setex(backup_key, QR_PROOF_TOKEN_TTL_SECONDS, serialized_data)
+
         expires_at_token = datetime.now() + timedelta(seconds=QR_PROOF_TOKEN_TTL_SECONDS)
-        
-        logger.info(f"QR proof token generated for entitlement {entitlement_id}")
-        
+
+        logger.info(f"QR proof token and backup code {backup_code} generated for entitlement {entitlement_id}")
+
         return GenerateProofResponse(
             proof_token=proof_token,
+            backup_code=backup_code,
             expires_at=expires_at_token,
             ttl_seconds=QR_PROOF_TOKEN_TTL_SECONDS
         )
+ 
+         
     
     # ================================
     # VALIDATION (MERCHANT SIDE)
