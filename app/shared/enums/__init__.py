@@ -32,14 +32,14 @@ class EntitlementState(str, Enum):
     Lifecycle:
     - ACTIVE: Entitlement claimed and ready for redemption
     - PENDING_CONFIRMATION: QR validated, awaiting merchant confirmation
-    - USED: Successfully redeemed
-    - VOIDED: Reversed within void window
+    - CONFIRMED: Successfully redeemed and confirmed by merchant
+    - CANCELLED: Cancelled (void deferred to Phase B)
     - EXPIRED: Time-based expiry (end of day)
     """
     ACTIVE = "active"
     PENDING_CONFIRMATION = "pending_confirmation"
-    USED = "used"
-    VOIDED = "voided"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
     EXPIRED = "expired"
 
 
