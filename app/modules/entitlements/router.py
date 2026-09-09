@@ -32,7 +32,8 @@ from app.modules.entitlements.schemas import (
     VoidRedemptionResponse,
     EntitlementListItem,
     EntitlementDetail,
-    UserSavingsSummary
+    UserSavingsSummary,
+    EntitlementStatusResponse
 )
 
 router = APIRouter()
@@ -330,6 +331,39 @@ async def get_user_savings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch savings summary"
+        )
+
+
+# ================================
+# LIVE STATUS FOR QR SCREEN
+# ================================
+
+@router.get("/{id}/status", response_model=EntitlementStatusResponse)
+async def get_entitlement_status(
+    id: str,
+    current_user: Dict = Depends(get_current_user)
+):
+    """
+    Get live status of an entitlement for the student's QR screen.
+
+    Returns ui_state:
+    - "amber"    → cashier scanned, waiting for confirm
+    - "green"    → confirmed, includes bill breakdown
+    - "inactive" → anything else
+    """
+    try:
+        user_id = current_user['id']
+        return await entitlement_service.get_entitlement_status(id, user_id)
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch entitlement status"
         )
 
 

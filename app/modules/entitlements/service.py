@@ -30,7 +30,8 @@ from app.modules.entitlements.schemas import (
     EntitlementDetail,
     EntitlementListItem,
     RedemptionDetail,
-    UserSavingsSummary
+    UserSavingsSummary,
+    EntitlementStatusResponse
 )
 from app.shared.enums import EntitlementState
 from app.shared.constants import (
@@ -288,7 +289,72 @@ class EntitlementService:
             ttl_seconds=QR_PROOF_TOKEN_TTL_SECONDS
         )
  
-         
+    
+    # ================================
+    # STUDENT STATUS (AMBER / GREEN)
+    # ================================
+
+    async def get_entitlement_status(
+        self,
+        entitlement_id: str,
+        user_id: str
+    ) -> EntitlementStatusResponse:
+        """
+        Return current UI state for the student's QR screen.
+
+        Polls the DB state and maps it to:
+          - "amber"    → cashier scanned, waiting for confirm
+          - "green"    → cashier confirmed, show final amounts
+          - "inactive" → anything else (active, expired, cancelled)
+        """
+        # 1. Fetch the entitlement
+        entitlement = await self._get_entitlement(entitlement_id)
+        if not entitlement:
+            raise ValueError("Entitlement not found")
+
+        # 2. Verify it belongs to this user
+        if entitlement['user_id'] != user_id:
+            raise ValueError("Unauthorized")
+
+        state = entitlement['state']
+
+        # 3. AMBER — cashier scanned, confirmation in progress
+        if state == EntitlementState.PENDING_CONFIRMATION.value:
+            return EntitlementStatusResponse(
+                state=state,
+                ui_state="amber"
+            )
+
+        # 4. GREEN — cashier confirmed, fetch amounts from redemptions table
+        if state in (EntitlementState.USED.value, "confirmed"):
+            redemption_result = (
+                self.supabase.table('redemptions')
+                .select('*')
+                .eq('entitlement_id', entitlement_id)
+                .order('redeemed_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+
+            if redemption_result.data:
+                r = redemption_result.data[0]
+                total_bill      = Decimal(str(r['total_bill_amount']))
+                discount_amount = Decimal(str(r['discount_amount']))
+                final_amount    = Decimal(str(r['final_amount']))
+                return EntitlementStatusResponse(
+                    state=state,
+                    ui_state="green",
+                    confirmed_at=datetime.fromisoformat(r['redeemed_at']),
+                    total_bill=total_bill,
+                    discount_amount=discount_amount,
+                    amount_to_pay=final_amount,
+                    savings=discount_amount
+                )
+            # redemption row not found yet (race condition) — stay amber
+            return EntitlementStatusResponse(state=state, ui_state="amber")
+        # 5. INACTIVE — active, expired, cancelled, anything else
+        return EntitlementStatusResponse(state=state, ui_state="inactive")
+
     
     # ================================
     # VALIDATION (MERCHANT SIDE)
@@ -663,7 +729,7 @@ class EntitlementService:
             logger.error(f"Error fetching entitlements: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            raise ValueError(f"Failed to fetch entitlements. Please try again.")
+            raise ValueError(f"Failed to fetch entitlements: {str(e)}")
     
     async def get_user_savings_summary(self, user_id: str) -> UserSavingsSummary:
         """Get user's total savings summary"""
@@ -716,7 +782,7 @@ class EntitlementService:
                 return False
             return True
         else:
-            # Memory fallback (dev only) — not fully atomic but acceptable
+        # Memory fallback (dev only) - not fully atomic but acceptable
             entry = self.redis.memory_store.get(redis_key)
             current = int(entry[0]) if entry else 0
             if current >= max_claims_per_user:
@@ -724,7 +790,7 @@ class EntitlementService:
             expiry = datetime.now().timestamp() + seconds_until_midnight
             self.redis.memory_store[redis_key] = (str(current + 1), expiry)
             return True
-    
+        
     async def _calculate_savings(
         self,
         offer: dict,
