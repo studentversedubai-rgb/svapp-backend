@@ -8,6 +8,7 @@ NO BUSINESS LOGIC - Structure only
 """
 
 from pydantic_settings import BaseSettings
+from functools import lru_cache
 from typing import List
 
 
@@ -50,7 +51,14 @@ class Settings(BaseSettings):
     # RATE LIMITING
     # ================================
     RATE_LIMIT_ENABLED: bool = True
-    RATE_LIMIT_PER_MINUTE: int = 60
+    # General per-identity budget. One app screen fans out to 5-6 endpoints,
+    # so this has to absorb bursts.
+    RATE_LIMIT_PER_MINUTE: int = 300
+    RATE_LIMIT_AUTH_PER_MIN: int = 10
+    RATE_LIMIT_PAYMENT_PER_MIN: int = 20
+    # Trusted proxies that append to X-Forwarded-For; the real client is the
+    # Nth entry from the right.
+    RATE_LIMIT_PROXY_HOPS: int = 1
     MAX_UPLOAD_SIZE_BYTES: int = 26214400
     VERIFICATION_FILE_MAX_BYTES: int = 10485760
     
@@ -108,6 +116,12 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
-# Global settings instance
-# TODO: Initialize this properly in main.py
-# settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    """
+    Get application settings using LRU cache for performance.
+    Settings are loaded only once on first call.
+    """
+    return Settings()
+
+settings = get_settings()

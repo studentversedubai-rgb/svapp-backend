@@ -38,6 +38,7 @@ class MerchantBasic(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     color: Optional[str] = None
+    dine_in: bool = False
     
     class Config:
         from_attributes = True
@@ -80,6 +81,7 @@ class OfferListItem(BaseModel):
     
     # Offer details
     offer_type: str
+    redemption_mode: str = "online"
     discount_value: Optional[str] = None
     original_price: Optional[float] = None
     discounted_price: Optional[float] = None
