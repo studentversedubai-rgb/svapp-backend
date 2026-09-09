@@ -326,7 +326,7 @@ class EntitlementService:
             )
 
         # 4. GREEN — cashier confirmed, fetch amounts from redemptions table
-        if state in (EntitlementState.USED.value, "confirmed"):
+        if state == EntitlementState.CONFIRMED.value:
             redemption_result = (
                 self.supabase.table('redemptions')
                 .select('*')
@@ -531,7 +531,7 @@ class EntitlementService:
         
         # Update entitlement state to USED
         self.supabase.table('entitlements').update({
-            'state': EntitlementState.USED.value,
+            'state': EntitlementState.CONFIRMED.value,
             'used_at': now.isoformat(),
             'updated_at': now.isoformat()
         }).eq('id', entitlement_id).execute()
@@ -659,7 +659,7 @@ class EntitlementService:
         
         # Restore entitlement to ACTIVE
         self.supabase.table('entitlements').update({
-            'state': EntitlementState.VOIDED.value,  # Mark as voided, not active
+            'state': EntitlementState.CANCELLED.value,  # Mark as voided, not active
             'voided_at': now.isoformat(),
             'updated_at': now.isoformat()
         }).eq('id', entitlement_id).execute()
