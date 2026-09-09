@@ -8,16 +8,14 @@ State Flow:
          ↓
     PENDING_CONFIRMATION (QR validated)
          ↓
-    USED (confirmed by merchant)
+    CONFIRMED (confirmed by merchant)
     
-    USED → VOIDED (within 2 hours)
     Any state → EXPIRED (time-based)
 """
 
 from typing import Dict, Set, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 from app.shared.enums import EntitlementState
-from app.shared.constants import VOID_WINDOW_HOURS
 
 
 class EntitlementStateMachine:
@@ -34,16 +32,15 @@ class EntitlementStateMachine:
             EntitlementState.EXPIRED
         },
         EntitlementState.PENDING_CONFIRMATION: {
-            EntitlementState.USED,
+            EntitlementState.CONFIRMED,
             EntitlementState.ACTIVE,  # Cancel validation
             EntitlementState.EXPIRED
         },
-        EntitlementState.USED: {
-            EntitlementState.VOIDED  # Only within void window
-        },
-        EntitlementState.VOIDED: set(),  # Terminal state
-        EntitlementState.EXPIRED: set()  # Terminal state
+        EntitlementState.CONFIRMED: set(),   # Terminal state
+        EntitlementState.CANCELLED: set(),   # Terminal state
+        EntitlementState.EXPIRED: set()      # Terminal state
     }
+
     
     def __init__(self):
         """Initialize state machine"""
@@ -85,19 +82,6 @@ class EntitlementStateMachine:
         # Check if transition is allowed
         if not self.can_transition(from_state, to_state):
             return False, f"Invalid transition from {from_state.value} to {to_state.value}"
-        
-        # Special validation for VOID
-        if to_state == EntitlementState.VOIDED:
-            if not metadata or 'used_at' not in metadata:
-                return False, "Missing used_at timestamp for void validation"
-            
-            used_at = metadata['used_at']
-            if isinstance(used_at, str):
-                used_at = datetime.fromisoformat(used_at.replace('Z', '+00:00'))
-            
-            void_deadline = used_at + timedelta(hours=VOID_WINDOW_HOURS)
-            if datetime.now(used_at.tzinfo) > void_deadline:
-                return False, f"Void window expired. Must void within {VOID_WINDOW_HOURS} hours of redemption"
         
         return True, None
     
@@ -183,31 +167,6 @@ class EntitlementStateMachine:
             return False, f"Cannot confirm redemption for entitlement in {state.value} state"
         
         return True, None
-    
-    def can_void(self, state: EntitlementState, used_at: datetime) -> tuple[bool, Optional[str]]:
-        """
-        Check if redemption can be voided
-        
-        Business rules:
-        - Must be in USED state
-        - Must be within void window (2 hours)
-        
-        Args:
-            state: Current entitlement state
-            used_at: Redemption timestamp
-            
-        Returns:
-            (can_void, reason)
-        """
-        if state != EntitlementState.USED:
-            return False, f"Can only void USED entitlements, current state: {state.value}"
-        
-        void_deadline = used_at + timedelta(hours=VOID_WINDOW_HOURS)
-        if datetime.now(used_at.tzinfo) > void_deadline:
-            return False, f"Void window expired. Must void within {VOID_WINDOW_HOURS} hours of redemption"
-        
-        return True, None
-
 
 # Global state machine instance
 state_machine = EntitlementStateMachine()
