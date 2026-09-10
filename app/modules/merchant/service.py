@@ -309,7 +309,20 @@ class MerchantService:
             offer.get('original_price'),
             offer.get('discounted_price')
         )
+
+        # Determine commission tier for April 2027 billing
+        discount_value_str = str(offer.get('discount_value') or '')
+        match = re.search(r"\d+(?:\.\d+)?", discount_value_str)
+        discount_pct = float(match.group(0)) if match else 0.0
+
+        if discount_pct >= 25:
+            commission_tier = 25
+        elif discount_pct >= 20:
+            commission_tier = 20
+        else:
+            commission_tier = 15
         
+
         # Create redemption record
         redemption_data = {
             'entitlement_id': str(entitlement_id),
@@ -320,7 +333,7 @@ class MerchantService:
             'discount_amount': float(discount_amount),
             'final_amount': float(final_amount),
             'offer_type': offer['offer_type'],
-            'commission_tier': merchant.get('commission_tier', 'standard') if merchant else 'standard',
+            'commission_tier': commission_tier,
             'redeemed_at': datetime.now(timezone.utc).isoformat(),
             'is_voided': False
         }
