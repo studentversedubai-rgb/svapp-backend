@@ -15,7 +15,7 @@ Key Features:
 import secrets
 import logging
 from typing import List, Optional, Dict
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, timezone, time as dt_time
 from decimal import Decimal
 from app.core.database import get_supabase_client
 from app.core.redis import redis_manager
@@ -140,13 +140,25 @@ class EntitlementService:
             if current_day not in offer['valid_days_of_week']:
                 raise ValueError("Offer is not valid on this day")
         
-        # Check per-user claim limit from the offer record
-        if not await self._check_daily_limit(
-            user_id,
-            offer_id,
-            offer.get('max_claims_per_user')
-        ):
-            raise ValueError("Daily claim limit reached for this offer")
+        # Check frequency limit (Control 3)
+        frequency = offer.get('frequency_per_student', 'daily')
+        if not await self._check_frequency_limit(user_id, offer_id, frequency):
+            raise ValueError("You've already used this offer recently.")
+
+        # Check daily venue redemption cap (Control 2)
+        daily_cap = offer.get('daily_redemption_cap')
+        if daily_cap is not None:
+            # Count today's CONFIRMED redemptions for this merchant
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            redemptions_count_res = self.supabase.table('redemptions')\
+                .select('id', count='exact')\
+                .eq('merchant_id', str(offer['merchant_id']))\
+                .gte('redeemed_at', today_start.isoformat())\
+                .eq('is_voided', False)\
+                .execute()
+            confirmed_today = redemptions_count_res.count if redemptions_count_res.count is not None else len(redemptions_count_res.data or [])
+            if confirmed_today >= daily_cap:
+                raise ValueError("This offer has reached its daily limit.")
 
         # Check max total claims from the offer record
         max_total_claims = offer.get('max_total_claims')
@@ -750,6 +762,50 @@ class EntitlementService:
     # ================================
     # HELPER METHODS
     # ================================
+    async def _check_frequency_limit(
+        self,
+        user_id: str,
+        offer_id: str,
+        frequency: str
+    ) -> bool:
+        """
+        Check if user has exceeded the offer's frequency limit.
+        Returns True if claim is ALLOWED, False if user already redeemed within window.
+        """
+        now = datetime.now(timezone.utc)
+        query = self.supabase.table('redemptions').select('id', count='exact').eq('user_id', str(user_id)).eq('offer_id', str(offer_id)).eq('is_voided', False)
+
+        if frequency == 'daily':
+            # Today since 00:00:00 UTC
+            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            query = query.gte('redeemed_at', start_of_day.isoformat())
+
+        elif frequency == 'weekly':
+            # Last 7 days
+            seven_days_ago = now - timedelta(days=7)
+            query = query.gte('redeemed_at', seven_days_ago.isoformat())
+
+        elif frequency == 'monthly':
+            # Current calendar month (day 1)
+            start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            query = query.gte('redeemed_at', start_of_month.isoformat())
+
+        elif frequency == 'quarterly':
+            # Last 90 days
+            ninety_days_ago = now - timedelta(days=90)
+            query = query.gte('redeemed_at', ninety_days_ago.isoformat())
+
+        elif frequency == 'once_ever':
+            # Any redemption ever, no date filter needed
+            pass
+
+        result = query.execute()
+        count = result.count if result.count is not None else len(result.data or [])
+
+        # If count > 0, the student already used it within the frequency window!
+        return count == 0
+
+    
     
     async def _check_daily_limit(
         self,

@@ -82,6 +82,7 @@ class OfferListItem(BaseModel):
     # Offer details
     offer_type: str
     redemption_mode: str = "online"
+    fulfilment_type: str = "both"
     discount_value: Optional[str] = None
     original_price: Optional[float] = None
     discounted_price: Optional[float] = None
@@ -124,6 +125,7 @@ class OfferDetail(BaseModel):
     
     # Offer details
     offer_type: str
+    fulfilment_type: str = "both"
     discount_value: Optional[str] = None
     original_price: Optional[float] = None
     discounted_price: Optional[float] = None
