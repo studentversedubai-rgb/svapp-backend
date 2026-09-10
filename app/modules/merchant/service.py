@@ -157,11 +157,11 @@ class MerchantService:
                 EntitlementState.PENDING_CONFIRMATION.value
             ]:
                 state_val = entitlement['state']
-                if state_val == EntitlementState.USED.value:
+                if state_val == EntitlementState.CONFIRMED.value:
                     reason = "This offer has already been redeemed"
                 elif state_val == EntitlementState.EXPIRED.value:
                     reason = "Entitlement has expired"
-                elif state_val == EntitlementState.VOIDED.value:
+                elif state_val == EntitlementState.CANCELLED.value:
                     reason = "Entitlement has been voided"
                 else:
                     reason = f"Entitlement is {state_val}"
@@ -278,11 +278,11 @@ class MerchantService:
         
         # Check state
         if entitlement['state'] not in [EntitlementState.ACTIVE.value, EntitlementState.PENDING_CONFIRMATION.value]:
-            if entitlement['state'] == EntitlementState.USED.value:
+            if entitlement['state'] == EntitlementState.CONFIRMED.value:
                 raise ValueError("This entitlement has already been redeemed.")
             elif entitlement['state'] == EntitlementState.EXPIRED.value:
                 raise ValueError("This entitlement has expired.")
-            elif entitlement['state'] == EntitlementState.VOIDED.value:
+            elif entitlement['state'] == EntitlementState.CANCELLED.value:
                 raise ValueError("This entitlement has been voided.")
             else:
                 raise ValueError(f"Entitlement cannot be confirmed (state: {entitlement['state']})")
@@ -347,7 +347,7 @@ class MerchantService:
         
         # Mark entitlement as CONFIRMED
         self.supabase.table('entitlements').update({
-            'state': 'CONFIRMED',
+            'state': EntitlementState.CONFIRMED.value,
             'used_at': datetime.now(timezone.utc).isoformat()
         }).eq('id', str(entitlement_id)).execute()
         
@@ -436,7 +436,7 @@ class MerchantService:
         
         # Restore entitlement to ACTIVE (if same day)
         self.supabase.table('entitlements').update({
-            'state': EntitlementState.VOIDED.value,
+            'state': EntitlementState.CANCELLED.value,
             'voided_at': now.isoformat()
         }).eq('id', str(redemption['entitlement_id'])).execute()
         
