@@ -5,7 +5,7 @@ Request/response models for merchant-side validation endpoints.
 These endpoints do NOT require student JWT authentication.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
 from uuid import UUID
 from datetime import datetime
@@ -14,7 +14,14 @@ from decimal import Decimal
 
 class MerchantValidateRequest(BaseModel):
     """Request to validate a student's QR proof token"""
-    proof_token: str = Field(..., description="QR proof token from student")
+    proof_token: Optional[str] = Field(None, description="QR proof token from student")
+    backup_code: Optional[str] = Field(None, description="Backup code from student")
+
+    @model_validator(mode="after")
+    def require_token_or_backup(self) -> "MerchantValidateRequest":
+        if not self.proof_token and not self.backup_code:
+            raise ValueError("Either proof_token or backup_code must be provided")
+        return self
 
 
 class MerchantValidateResponse(BaseModel):
@@ -34,22 +41,9 @@ class MerchantValidateResponse(BaseModel):
     discounted_price: Optional[Decimal] = None
 
 
-class MerchantVerifyPinRequest(BaseModel):
-    """Request to verify merchant PIN before confirming a redemption"""
-    proof_token: str = Field(..., description="QR proof token (used to look up the merchant)")
-    merchant_pin: str = Field(..., min_length=4, description="Merchant PIN to verify")
-
-
-class MerchantVerifyPinResponse(BaseModel):
-    """Response from PIN verification"""
-    success: bool
-    message: str
-
-
 class MerchantConfirmRequest(BaseModel):
     """Request to confirm redemption with bill amount"""
     proof_token: str = Field(..., description="QR proof token")
-    merchant_pin: str = Field(..., min_length=4, max_length=6, description="Merchant PIN")
     total_bill_amount: Decimal = Field(..., gt=0, description="Total bill before discount")
 
 
@@ -79,3 +73,21 @@ class MerchantVoidResponse(BaseModel):
     message: str
     redemption_id: UUID
     voided_at: datetime
+
+
+#Shift Login Flow
+
+class ShiftLoginRequest(BaseModel):
+    merchant_id: str
+    pin: str
+
+
+class ShiftLoginResponse(BaseModel):
+    success: bool
+    session_token: str
+    expires_at: datetime
+    merchant_name: str
+
+
+class ShiftLogoutRequest(BaseModel):
+    session_token: str

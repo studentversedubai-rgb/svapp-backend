@@ -5,7 +5,7 @@ Public endpoints for merchant-side QR validation and redemption.
 Does NOT require student JWT authentication.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Header
 from fastapi.responses import JSONResponse
 import logging
 
@@ -13,17 +13,63 @@ from app.modules.merchant.service import merchant_service
 from app.modules.merchant.schemas import (
     MerchantValidateRequest,
     MerchantValidateResponse,
-    MerchantVerifyPinRequest,
-    MerchantVerifyPinResponse,
     MerchantConfirmRequest,
     MerchantConfirmResponse,
     MerchantVoidRequest,
-    MerchantVoidResponse
+    MerchantVoidResponse,
+    ShiftLoginRequest,
+    ShiftLogoutRequest, 
+    ShiftLoginResponse
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# ================================
+# SHIFT SESSIONS
+# ================================
+
+@router.post("/shift/login", response_model=ShiftLoginResponse)
+async def shift_login(request: ShiftLoginRequest):
+    """
+    Start merchant shift session with PIN.
+    Returns session token valid for 12 hours.
+    """
+    try:
+        result = await merchant_service.shift_login(
+            merchant_id=request.merchant_id,
+            pin=request.pin
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error in shift login: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Shift login failed. Please try again."
+        )
+
+
+@router.post("/shift/logout")
+async def shift_logout(request: ShiftLogoutRequest):
+    """
+    End merchant shift session by invalidating the token.
+    """
+    try:
+        await merchant_service.shift_logout(request.session_token)
+        return {"success": True, "message": "Shift logged out successfully"}
+    except Exception as e:
+        logger.error(f"Error in shift logout: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Shift logout failed"
+        )
+
 
 
 # ================================
@@ -31,23 +77,18 @@ router = APIRouter()
 # ================================
 
 @router.post("/validate", response_model=MerchantValidateResponse)
-async def validate_qr_token(request: MerchantValidateRequest):
+async def validate_qr_token(request: MerchantValidateRequest, 
+x_shift_token: str = Header(..., alias="X-Shift-Token")):
+    
     """
-    Validate student's QR proof token
-    
-    **Public endpoint** - No authentication required
-    
-    Returns PASS/FAIL with offer details on success.
-    
-    Business Rules:
-    - Token must be valid and not expired (30s TTL)
-    - Entitlement must be in ACTIVE state
-    - Entitlement must not be expired
-    
-    Rate Limit: 100 requests per minute per IP
+    Validate student's QR proof token or backup code.
+    Requires active shift session in X-Shift-Token header.
     """
+
     try:
-        result = await merchant_service.validate_proof_token(request.proof_token)
+        code = request.proof_token or request.backup_code
+        result = await merchant_service.validate_proof_token(code=code,
+                                                            session_token=x_shift_token)
         return result
     except Exception as e:
         logger.error(f"Error in validate endpoint: {e}")
@@ -59,68 +100,21 @@ async def validate_qr_token(request: MerchantValidateRequest):
 
 
 # ================================
-# VERIFY PIN
-# ================================
-
-@router.post("/verify-pin", response_model=MerchantVerifyPinResponse)
-async def verify_merchant_pin(request: MerchantVerifyPinRequest):
-    """
-    Verify merchant PIN before going to confirm step
-    
-    Returns success if PIN is correct, otherwise raises 400.
-    """
-    try:
-        await merchant_service.verify_pin(
-            proof_token=request.proof_token,
-            merchant_pin=request.merchant_pin
-        )
-        return MerchantVerifyPinResponse(
-            success=True,
-            message="PIN verified successfully"
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        import traceback
-        logger.error(f"Error in verify-pin endpoint: {e}\n{traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to verify PIN. Please try again."
-        )
-
-
-# ================================
 # CONFIRM REDEMPTION
 # ================================
 
 @router.post("/confirm", response_model=MerchantConfirmResponse)
-async def confirm_redemption(request: MerchantConfirmRequest):
+async def confirm_redemption(request: MerchantConfirmRequest, 
+x_shift_token: str = Header(..., alias="X-Shift-Token")):
     """
-    Confirm redemption with merchant PIN and bill amount
-    
-    **Public endpoint** - No authentication required
-    **Requires merchant PIN** for authorization
-    
-    Calculates discount based on offer type and creates redemption record.
-    
-    Business Rules:
-    - Token must be valid
-    - Entitlement must be ACTIVE
-    - Merchant PIN must be correct
-    - Discount calculated server-side
-    - Entitlement marked as USED
-    - Token deleted (single-use)
-    
-    Rate Limit: 60 requests per minute per IP
+    Confirm redemption with bill amount.
+    Requires active shift session in X-Shift-Token header.
     """
     try:
         result = await merchant_service.confirm_redemption(
-            proof_token=request.proof_token,
-            merchant_pin=request.merchant_pin,
-            total_bill_amount=request.total_bill_amount
+            code=request.proof_token,
+            total_bill_amount=request.total_bill_amount,
+            session_token=x_shift_token
         )
         return result
     except ValueError as e:

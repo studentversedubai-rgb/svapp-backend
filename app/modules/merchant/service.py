@@ -11,6 +11,7 @@ import os
 import re
 import hashlib
 import hmac
+import secrets
 from typing import Optional, Dict
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -25,12 +26,16 @@ from app.core.redis import redis_manager
 from app.modules.merchant.schemas import (
     MerchantValidateResponse,
     MerchantConfirmResponse,
-    MerchantVoidResponse
+    MerchantVoidResponse,
+    ShiftLoginResponse   
 )
 from app.shared.enums import EntitlementState
 from app.shared.constants import (
     REDIS_PREFIX_QR_TOKEN,
-    VOID_WINDOW_HOURS
+    VOID_WINDOW_HOURS,
+    REDIS_PREFIX_BACKUP_CODE,
+    REDIS_PREFIX_SHIFT_SESSION,
+    SHIFT_SESSION_TTL_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,12 +48,67 @@ class MerchantService:
         """Initialize service"""
         self.supabase = get_supabase_client()
         self.redis = redis_manager
+
+    # ================================
+    # SHIFT SESSION MANAGEMENT
+    # ================================
+
+    async def shift_login(self, merchant_id: str, pin: str) -> ShiftLoginResponse:
+        """
+        Authenticate a merchant for a shift and issue a session token.
+        """
+        merchant = await self._get_merchant(merchant_id)
+        if not merchant:
+            raise ValueError("Merchant not found")
+
+        # Verify PIN (handles bcrypt & auto-upgrades legacy SHA-256)
+        if not await self._verify_merchant_pin(merchant_id, pin):
+            raise ValueError("Invalid PIN")
+
+        # Generate secure random token
+        session_token = secrets.token_urlsafe(32)
+
+        # Store session in Redis
+        redis_key = f"{REDIS_PREFIX_SHIFT_SESSION}{session_token}"
+        session_data = json.dumps({"merchant_id": merchant_id})
+        self.redis.setex(redis_key, SHIFT_SESSION_TTL_SECONDS, session_data)
+
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=SHIFT_SESSION_TTL_SECONDS)
+
+        return ShiftLoginResponse(
+            success=True,
+            session_token=session_token,
+            expires_at=expires_at,
+            merchant_name=merchant.get("name", "Unknown Merchant")
+        )
+
+    async def shift_logout(self, session_token: str) -> None:
+        """
+        End a merchant shift session by removing the Redis key.
+        """
+        redis_key = f"{REDIS_PREFIX_SHIFT_SESSION}{session_token}"
+        self.redis.delete(redis_key)
+
+    async def _get_session_merchant(self, session_token: str) -> str:
+        """
+        Validate shift session token and return merchant_id.
+        Raises ValueError if session is invalid or expired.
+        """
+        redis_key = f"{REDIS_PREFIX_SHIFT_SESSION}{session_token}"
+        session_data_str = self.redis.get(redis_key)
+
+        if not session_data_str:
+            raise ValueError("Shift session expired. Please log in again.")
+
+        session_data = json.loads(session_data_str)
+        return session_data["merchant_id"]
+
     
     # ================================
     # VALIDATE QR TOKEN
     # ================================
     
-    async def validate_proof_token(self, proof_token: str) -> MerchantValidateResponse:
+    async def validate_proof_token(self, code: str, session_token: str) -> MerchantValidateResponse:
         """
         Validate student's QR proof token
         
@@ -59,16 +119,23 @@ class MerchantService:
             Validation response with PASS/FAIL status
         """
         try:
-            # Get token data from Redis
-            redis_key = f"{REDIS_PREFIX_QR_TOKEN}{proof_token}"
-            token_data_str = self.redis.get(redis_key)
+            await self._get_session_merchant(session_token)
             
+            if len(code) <= 6:
+                # It's definitely a backup code
+                redis_key = f"{REDIS_PREFIX_BACKUP_CODE}{code.upper()}"
+            else:
+                # It's a QR token
+                redis_key = f"{REDIS_PREFIX_QR_TOKEN}{code}"
+
+            token_data_str = self.redis.get(redis_key)
             if not token_data_str:
                 return MerchantValidateResponse(
                     success=False,
                     status="FAIL",
                     reason="Invalid or expired token"
                 )
+
             
             # Parse token data
             token_data = json.loads(token_data_str)
@@ -130,13 +197,6 @@ class MerchantService:
             user = await self._get_user(entitlement['user_id'])
             student_name = user.get('full_name', 'Student') if user else "Student"
 
-            # Extend the Redis token TTL to give the merchant time to enter
-            # their PIN and bill amount (default QR TTL is only 30 seconds).
-            # 300 seconds = 5 minutes is sufficient for the merchant flow.
-            # RedisManager only exposes setex/get/delete, so we re-store
-            # the same token data with the new TTL instead of calling expire.
-            MERCHANT_SESSION_TTL = 300
-            self.redis.setex(redis_key, MERCHANT_SESSION_TTL, token_data_str)
 
             # Mark entitlement as PENDING_CONFIRMATION so concurrent scans are rejected
             self.supabase.table('entitlements').update({
@@ -144,11 +204,6 @@ class MerchantService:
                 'updated_at': datetime.now(timezone.utc).isoformat()
             }).eq('id', str(entitlement_id)).execute()
 
-            logger.info(
-                f"QR token validated for entitlement {entitlement_id}; "
-                f"TTL extended to {MERCHANT_SESSION_TTL}s"
-            )
-            
             # Return PASS with details
             return MerchantValidateResponse(
                 success=True,
@@ -162,7 +217,14 @@ class MerchantService:
                 original_price=offer.get('original_price'),
                 discounted_price=offer.get('discounted_price')
             )
-            
+
+        except ValueError as ve:
+            return MerchantValidateResponse(
+                success=False,
+                status="FAIL",
+                reason=str(ve)
+            )
+
         except Exception as e:
             logger.error(f"Error validating proof token: {e}")
             import traceback
@@ -172,60 +234,16 @@ class MerchantService:
                 status="FAIL",
                 reason="Validation error"
             )
-    
-    # ================================
-    # VERIFY MERCHANT PIN (pre-check)
-    # ================================
-
-    async def verify_pin(self, proof_token: str, merchant_pin: str) -> bool:
-        """
-        Verify the merchant PIN without confirming the redemption.
-
-        Called from the PIN step so the user gets instant feedback
-        before entering the bill amount.  The token must still be in
-        Redis (it was extended to 300 s on validate).
-
-        Returns:
-            True on success
-
-        Raises:
-            ValueError: with a user-friendly message on failure
-        """
-        redis_key = f"{REDIS_PREFIX_QR_TOKEN}{proof_token}"
-        token_data_str = self.redis.get(redis_key)
-
-        if not token_data_str:
-            raise ValueError("QR code has expired. Please scan again.")
-
-        token_data = json.loads(token_data_str)
-        entitlement_id = token_data['entitlement_id']
-
-        entitlement = await self._get_entitlement(entitlement_id)
-        if not entitlement:
-            raise ValueError("Entitlement not found. Please scan again.")
-
-        offer = await self._get_offer(entitlement['offer_id'])
-        if not offer:
-            raise ValueError("Offer not found. Please scan again.")
-
-        merchant = await self._get_merchant(offer['merchant_id'])
-        if not merchant:
-            raise ValueError("Merchant not found. Please contact support.")
-
-        if not await self._verify_merchant_pin(merchant['id'], merchant_pin):
-            raise ValueError("Invalid merchant PIN")
-
-        return True
-
+   
     # ================================
     # CONFIRM REDEMPTION
     # ================================
     
     async def confirm_redemption(
         self,
-        proof_token: str,
-        merchant_pin: str,
-        total_bill_amount: Decimal
+        code: str,
+        total_bill_amount: Decimal,
+        session_token: str
     ) -> MerchantConfirmResponse:
         """
         Confirm redemption with bill amount
@@ -242,7 +260,8 @@ class MerchantService:
             ValueError: If validation fails
         """
         # Get token data from Redis
-        redis_key = f"{REDIS_PREFIX_QR_TOKEN}{proof_token}"
+        session_merchant_id = await self._get_session_merchant(session_token)
+        redis_key = f"{REDIS_PREFIX_QR_TOKEN}{code}"
         token_data_str = self.redis.get(redis_key)
         
         if not token_data_str:
@@ -278,8 +297,9 @@ class MerchantService:
         if not merchant:
             raise ValueError("Merchant not found")
         
-        if not await self._verify_merchant_pin(merchant['id'], merchant_pin):
-            raise ValueError("Invalid merchant PIN")
+        if str(offer['merchant_id']) != str(session_merchant_id):
+            raise ValueError("Offer does not belong to your merchant account")
+
         
         # Calculate discount and final amount
         discount_amount, final_amount = self._calculate_savings(
@@ -300,6 +320,7 @@ class MerchantService:
             'discount_amount': float(discount_amount),
             'final_amount': float(final_amount),
             'offer_type': offer['offer_type'],
+            'commission_tier': merchant.get('commission_tier', 'standard') if merchant else 'standard',
             'redeemed_at': datetime.now(timezone.utc).isoformat(),
             'is_voided': False
         }
@@ -311,14 +332,19 @@ class MerchantService:
         
         redemption = result.data[0]
         
-        # Mark entitlement as USED
+        # Mark entitlement as CONFIRMED
         self.supabase.table('entitlements').update({
-            'state': EntitlementState.USED.value,
+            'state': 'CONFIRMED',
             'used_at': datetime.now(timezone.utc).isoformat()
         }).eq('id', str(entitlement_id)).execute()
         
-        # Delete Redis token (single-use)
-        self.redis.delete(redis_key)
+        # Delete BOTH QR token and backup code from Redis
+        proof_tok = token_data.get('proof_token') or (code if len(code) > 6 else None)
+        backup_c = token_data.get('backup_code') or (code if len(code) <= 6 else None)
+        if proof_tok:
+            self.redis.delete(f"{REDIS_PREFIX_QR_TOKEN}{proof_tok}")
+        if backup_c:
+            self.redis.delete(f"{REDIS_PREFIX_BACKUP_CODE}{backup_c.upper()}")
         
         # Log analytics
         await self._log_analytics_event('redemption_confirmed', {
