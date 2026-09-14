@@ -4,6 +4,138 @@ Student housing inquiries. All routes are mounted under `/baitna`.
 
 ---
 
+# User flow
+
+The whole feature in the order the app calls it.
+
+```
+App launch
+  GET /baitna/status
+       |
+       +--  tile_visible: false  ->  don't render the Baitna tile, stop here
+       |
+       v
+  Student taps the Baitna tile on your home screen
+       |
+       v
+  Partners screen   (the landing screen)
+  GET /baitna/partners
+  one card per partner, "12.4 km away from <uni>",
+  and every partner's units already nested in the response
+       |
+       +----------------------------------------+
+       |                                        |
+       v                                        v
+  Tap a partner                            Search / filter
+  its units came back with                 GET /baitna/listings?<filters>
+  the call above, so no                    flat feed of units across
+  second request is needed                 all partners, with filters
+       |                                        |
+       +-------------------+--------------------+
+                           |
+                           v
+                Student picks a unit
+                           |
+                           v
+                Consent screen (your copy, shown verbatim)
+                           |
+                           v
+                POST /baitna/leads   ->   201, inquiry is live
+                           |
+                           v
+                My inquiries
+                GET /baitna/leads
+                           |
+       +-------------------+-------------------+-------------------+
+       |                   |                   |                   |
+   Switch unit         Withdraw            Reroute            Resend email
+   POST .../listing    POST .../consent    POST .../fallback  POST .../fallback
+        /switch             /withdraw           /route             /resend
+```
+
+## Step 1: should Baitna exist at all?
+
+`GET /baitna/status` is public and never errors. If `tile_visible` is false, do
+not render the Baitna entry point on your home screen. Every other route **404s**
+while the feature is off, so treat a 404 on any Baitna call as "feature not
+available", not as a bug.
+
+Note the two different things called a tile. `tile_visible` is about the **Baitna
+entry point on your own home screen**. The **partner tiles** are the cards inside
+Baitna, and they are what carries the distance line.
+
+## Step 2: browsing
+
+`GET /baitna/partners` is the landing screen. It returns every active partner as
+a card, with the distance line, and with **that partner's units already nested
+inside the same response**. Tapping a partner to see its units therefore needs no
+second request.
+
+`GET /baitna/listings` is not a separate front door, it is the search and filter
+path reached from inside Baitna. It returns a flat feed of units across all
+partners with filters, sorting and pagination, which the partners call has none
+of. Use it for a search screen or a filter sheet, not as the first thing the
+student sees.
+
+Either route ends at the same place: a chosen unit, which is what you submit an
+inquiry against. Nothing in the API enforces this order, so if your design lands
+students on a search feed instead, that works too; just make sure they can still
+reach the partner cards, since that is the only place the distance line appears.
+
+## Step 3: submitting
+
+The consent screen is yours to design, but whatever text you render must be sent
+back **verbatim** in `consent.consent_text_snapshot`. It is stored as the legal
+record of what the student agreed to.
+
+Two server rules can reject the submission, and both need a real UI path:
+
+| Code | What happened | What to do |
+|---|---|---|
+| `OPEN_INQUIRY_EXISTS` | They already have a live inquiry with this partner | Send them to My Inquiries |
+| `COOLDOWN_ACTIVE` | They closed one with this partner in the last 30 days | Show `data.eligible_from` |
+
+Both limits are **per partner**. A student can hold inquiries with several
+different partners at the same time.
+
+## Step 4: the inquiry lifecycle
+
+This is what drives My Inquiries. The table is intuition only; **always read the
+actual `can_*` flags on each row** rather than deriving buttons from `status`.
+
+| Stage | `status_label` shown | Withdraw | Switch unit | Reroute |
+|---|---|---|---|---|
+| Just submitted | Awaiting Response | yes | yes | no |
+| Still silent after 7 days | Awaiting Response | yes | yes | **yes** |
+| Partner replies | Acknowledged by Partner | yes | **no** | no |
+| Closed, any reason | Withdrawn / Closed / Expired | no | no | no |
+
+The two rows worth noticing:
+
+**Reroute unlocks itself after 7 days of silence.** Nothing the student does
+triggers it, so the same inquiry that had two buttons yesterday has three today.
+Re-read `GET /baitna/leads` when the screen opens rather than caching the flags.
+
+**Acknowledgement kills switching but not withdrawing.** Once the partner replies
+the chosen unit is fixed, but the student can still revoke consent. Do not grey
+out the whole action row together.
+
+## Step 5: the four actions
+
+- **Switch unit** moves the inquiry to a different unit from the *same* partner.
+  Twice per partner per rolling 30 days. The inquiry keeps its reference and its
+  consent record; only the unit changes.
+- **Withdraw** revokes consent and closes the inquiry. Irreversible, and it
+  starts a 30-day block on new inquiries to that partner, so confirm first.
+- **Reroute** closes the stalled inquiry and opens a fresh one with a different
+  partner, automatically chosen. If nothing matches you get Dubizzle and Bayut
+  links to hand the student instead.
+- **Resend email** re-sends the confirmation. Changes nothing.
+
+---
+
+# Conventions
+
 ## Response envelope
 
 Every Baitna route returns this shape, success or failure. Never read the HTTP
@@ -57,7 +189,9 @@ so a broken call means "hide the tile", not "show an error".
 
 ## `GET /baitna/partners`
 
-Every active partner with its active listings. This is the tile screen.
+Every active partner with its active listings. This is the landing screen inside
+Baitna. Each partner's units come nested in the same response, so drilling into a
+partner needs no second call.
 
 ```jsonc
 { "partners": [{
@@ -160,7 +294,7 @@ Submit an inquiry. **201** on success.
   "partner_id": "uuid",
   "listing_id": "uuid",
   "move_in_date": "2026-10-01",      // not past, max 730 days ahead
-  "lease_length_months": 12,          // 1–60
+  "lease_length_months": 12,          // 1 to 60
   "budget_band": "3500_5000",
   "current_status": "arriving_soon",
   "consent": {
