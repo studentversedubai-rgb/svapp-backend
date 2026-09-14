@@ -9,7 +9,8 @@ NO BUSINESS LOGIC - Structure only
 
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
+
 
 
 class Settings(BaseSettings):
@@ -37,8 +38,18 @@ class Settings(BaseSettings):
     # ================================
     # JWT
     # ================================
-    JWT_SECRET: str
+       # ================================
+    # JWT
+    # ================================
+    JWT_SECRET: str = ""
+    SUPABASE_JWT_SECRET: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
+
+    @property
+    def jwt_secret_key(self) -> str:
+        """Returns SUPABASE_JWT_SECRET if present, else JWT_SECRET"""
+        return self.SUPABASE_JWT_SECRET or self.JWT_SECRET
+
     
     # ================================
     # REDIS

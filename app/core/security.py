@@ -8,8 +8,11 @@ import logging
 from typing import Optional, Dict
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from app.core.database import get_supabase_client, create_fresh_supabase_client
+from app.core.database import get_supabase_client
 from app.core.activity import touch_last_active
+from jose import jwt, JWTError
+from app.core.config import settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -48,25 +51,35 @@ async def get_current_user(
     token = credentials.credentials
 
     try:
-        # Validate token with a FRESH client.
-        # The shared admin client caches session state from sign_in_with_password calls
-        # made during registration/login. Using it for get_user() can cause it to validate
-        # the token against a stale/dead session → 401 even with a valid token.
-        fresh = create_fresh_supabase_client()
-        auth_response = fresh.auth.get_user(token)
-        
-        if not auth_response.user:
+        # 1. Decode token locally (< 1ms)
+        try:
+            payload = jwt.decode(
+                token,
+                settings.jwt_secret_key,
+                algorithms=[settings.JWT_ALGORITHM],
+                audience="authenticated"
+            )
+            user_id = payload.get("sub")
+            if not user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token payload",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+        except JWTError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired token",
                 headers={"WWW-Authenticate": "Bearer"}
             )
-        
-        user_id = auth_response.user.id
-        
-        # Fetch user details from public.users
+
+        # 2. Fetch user details from public.users
         try:
             user_result = supabase.table("users").select("*").eq("id", user_id).execute()
+
+       
+        
+       
             
             if not user_result.data:
                 raise HTTPException(
@@ -173,12 +186,19 @@ async def get_optional_user(request: Request) -> Optional[Dict]:
         return None
 
     try:
-        fresh = create_fresh_supabase_client()
-        auth_response = fresh.auth.get_user(token)
-        if not auth_response.user:
+        try:
+            payload = jwt.decode(
+                token,
+                settings.jwt_secret_key,
+                algorithms=[settings.JWT_ALGORITHM],
+                audience="authenticated"
+            )
+            user_id = payload.get("sub")
+            if not user_id:
+                return None
+        except JWTError:
             return None
 
-        user_id = auth_response.user.id
         user_result = supabase.table("users").select("*").eq("id", user_id).execute()
         if not user_result.data:
             return None
@@ -211,24 +231,33 @@ async def get_current_user_no_device_check(
     token = credentials.credentials
 
     try:
-        # Use fresh client here too — same reason as get_current_user above
-        fresh = create_fresh_supabase_client()
-        auth_response = fresh.auth.get_user(token)
-        
-        if not auth_response.user:
+        try:
+            payload = jwt.decode(
+                token,
+                settings.jwt_secret_key,
+                algorithms=[settings.JWT_ALGORITHM],
+                audience="authenticated"
+            )
+            user_id = payload.get("sub")
+            if not user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token payload",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+        except JWTError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired token",
                 headers={"WWW-Authenticate": "Bearer"}
             )
-        
-        user_id = auth_response.user.id
+
         
         user_result = supabase.table("users").select("*").eq("id", user_id).execute()
         
         if not user_result.data:
             # User exists in Auth but not yet in public.users — return basic info
-            return {"id": str(user_id), "email": auth_response.user.email}
+            return {"id": str(user_id), "email": payload.get("email")}
         
         return user_result.data[0]
         
