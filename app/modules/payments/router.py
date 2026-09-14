@@ -66,7 +66,7 @@ def _require_admin(current_user: dict) -> None:
         "confirmation emails. No real payment is processed."
     ),
 )
-async def create_mock_order(
+def create_mock_order(
     payload: CreateMockOrderRequest,
     current_user: dict = Depends(get_current_user),
     payment_service: PaymentService = Depends(get_payment_service),
@@ -89,7 +89,7 @@ async def create_mock_order(
     user_email = current_user.get("email", "")
 
     try:
-        return await payment_service.create_mock_order(
+        return payment_service.create_mock_order(
             user_id=user_id,
             user_name=user_name,
             user_email=user_email,
@@ -115,7 +115,7 @@ async def create_mock_order(
     response_model=CreatePaymentIntentResponse,
     summary="Create a Stripe Payment Intent",
 )
-async def create_payment_intent(
+def create_payment_intent(
     payload: CreatePaymentIntentRequest,
     current_user: dict = Depends(get_current_user),
     payment_service: PaymentService = Depends(get_payment_service),
@@ -131,7 +131,7 @@ async def create_payment_intent(
     user_email = current_user.get("email", "")
     
     try:
-        return await payment_service.create_payment_intent(
+        return payment_service.create_payment_intent(
             user_id=user_id,
             user_name=user_name,
             user_email=user_email,
@@ -156,7 +156,7 @@ async def create_payment_intent(
     response_model=ConfirmPaymentResponse,
     summary="Confirm a Stripe Payment",
 )
-async def confirm_payment(
+def confirm_payment(
     payload: ConfirmPaymentRequest,
     current_user: dict = Depends(get_current_user),
     payment_service: PaymentService = Depends(get_payment_service),
@@ -164,7 +164,7 @@ async def confirm_payment(
     user_id = current_user["id"]
     
     try:
-        return await payment_service.confirm_payment(
+        return payment_service.confirm_payment(
             user_id=user_id,
             payload=payload,
         )
@@ -194,7 +194,7 @@ async def confirm_payment(
         "ticket info. Optionally filter by created_at date range."
     ),
 )
-async def export_ticket_records(
+def export_ticket_records(
     from_date: Optional[date] = Query(
         None,
         description="Filter records created on or after this date (YYYY-MM-DD)",
@@ -213,7 +213,7 @@ async def export_ticket_records(
     _require_admin(current_user)
 
     try:
-        csv_content = await payment_service.export_records_csv(
+        csv_content = payment_service.export_records_csv(
             from_date=from_date.isoformat() if from_date else None,
             to_date=to_date.isoformat() if to_date else None,
         )

@@ -186,7 +186,7 @@ class OfferService:
     # HOME FEED
     # ================================
     
-    async def get_home_feed(
+    def get_home_feed(
         self,
         user_id: Optional[str] = None,
         latitude: Optional[float] = None,
@@ -335,7 +335,7 @@ class OfferService:
     # SEARCH
     # ================================
     
-    async def search_offers(
+    def search_offers(
         self,
         user_id: Optional[str] = None,
         query: Optional[str] = None,
@@ -478,7 +478,7 @@ class OfferService:
     # NEARBY OFFERS
     # ================================
     
-    async def get_nearby_offers(
+    def get_nearby_offers(
         self,
         user_id: Optional[str],
         latitude: float,
@@ -506,7 +506,7 @@ class OfferService:
         # Enforce max radius
         radius_km = min(radius_km, 50.0)
         
-        return await self.search_offers(
+        return self.search_offers(
             user_id=user_id,
             query=None,
             category_id=category_id,
@@ -521,7 +521,7 @@ class OfferService:
     # OFFER DETAIL
     # ================================
     
-    async def get_offer_detail(
+    def get_offer_detail(
         self,
         user_id: Optional[str],
         offer_id: str,
@@ -588,7 +588,7 @@ class OfferService:
     # CATEGORIES
     # ================================
     
-    async def get_categories(self) -> List[CategoryResponse]:
+    def get_categories(self) -> List[CategoryResponse]:
         """
         Get all active categories
         

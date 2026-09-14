@@ -80,7 +80,7 @@ class PaymentService:
     # CREATE MOCK ORDER
     # ================================
 
-    async def create_mock_order(
+    def create_mock_order(
         self,
         user_id: str,
         user_name: str,
@@ -111,7 +111,7 @@ class PaymentService:
             Exception:  On database errors.
         """
         # 1. Fetch and validate the ticket
-        ticket = await self._get_active_ticket(payload.ticket_id)
+        ticket = self._get_active_ticket(payload.ticket_id)
 
         merchant_name = ticket.get("merchant_name", "Unknown Merchant")
         ticket_details = ticket.get("ticket_details", "")
@@ -171,7 +171,7 @@ class PaymentService:
     # ADMIN CSV EXPORT
     # ================================
 
-    async def export_records_csv(
+    def export_records_csv(
         self,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
@@ -264,7 +264,7 @@ class PaymentService:
     # PRIVATE HELPERS
     # ================================
 
-    async def _get_active_ticket(self, ticket_id: UUID) -> dict:
+    def _get_active_ticket(self, ticket_id: UUID) -> dict:
         """
         Fetch an active ticket whose pricing period covers today.
 
@@ -574,7 +574,7 @@ StudentVerse Team"""
     # STRIPE INTEGRATION
     # ================================
 
-    async def create_payment_intent(
+    def create_payment_intent(
         self,
         user_id: str,
         user_name: str,
@@ -590,7 +590,7 @@ StudentVerse Team"""
         if not stripe.api_key:
             raise HTTPException(500, "Stripe is not configured")
         
-        ticket = await self._get_active_ticket(payload.ticket_id)
+        ticket = self._get_active_ticket(payload.ticket_id)
         amount_in_fils = int(float(ticket["our_price"]) * payload.quantity * 100)
         
         # Get or create customer
@@ -675,7 +675,7 @@ StudentVerse Team"""
             currency="aed"
         )
 
-    async def confirm_payment(
+    def confirm_payment(
         self,
         user_id: str,
         payload: "ConfirmPaymentRequest",
