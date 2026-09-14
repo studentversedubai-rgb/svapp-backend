@@ -97,6 +97,16 @@ class WithdrawRequest(BaseModel):
     reason: Optional[str] = Field(None, max_length=1000)
 
 
+class ListingSwitchRequest(BaseModel):
+    """
+    The unit to move an open inquiry onto. The partner is not a field: it is read
+    from the lead, so this endpoint can only ever move a student between units of
+    the partner they already consented to.
+    """
+
+    listing_id: UUID
+
+
 # ================================
 # BROWSE FEED FILTERS
 # ================================
@@ -237,6 +247,13 @@ class PartnerTile(BaseModel):
     property_name: Optional[str] = None
     logo_url: Optional[str] = None
     price_disclosure_enabled: bool
+
+    # Straight-line distance to the student's university. Both are None whenever
+    # either side has no coordinates on file, or the student's university can't
+    # be identified — the tile then renders without the line.
+    distance_km: Optional[float] = None
+    distance_label: Optional[str] = None
+
     listings: List[ListingRow] = Field(default_factory=list)
 
 
@@ -245,6 +262,7 @@ class LeadRow(BaseModel):
     lead_reference: str
     partner_name: str
     property_name: Optional[str] = None
+    listing_id: Optional[str] = None
     unit_type: Optional[str] = None
     unit_type_label: Optional[str] = None
     status: str
@@ -253,3 +271,8 @@ class LeadRow(BaseModel):
     acknowledged_at: Optional[datetime] = None
     can_withdraw: bool
     can_fallback: bool
+
+    # Drives the second button next to Withdraw. switches_remaining is what the
+    # app shows the student before they spend one.
+    can_switch_listing: bool = False
+    switches_remaining: int = 0

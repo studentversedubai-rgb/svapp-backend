@@ -28,6 +28,7 @@ from app.modules.baitna.schemas import (
     FallbackRouteRequest,
     LeadCreateRequest,
     ListingSort,
+    ListingSwitchRequest,
     UnitType,
     resolve_page_size,
 )
@@ -36,8 +37,12 @@ from app.modules.baitna.service import (
     BaitnaService,
     build_lead_row,
     build_listing_row,
+    build_partner_distance,
     compute_can_fallback,
+    compute_can_switch_listing,
     compute_can_withdraw,
+    compute_switches_remaining,
+    haversine_km,
 )
 
 
@@ -107,6 +112,9 @@ class FakeQuery:
 
     def gt(self, *a, **k):
         return self._record("gt", *a, **k)
+
+    def ilike(self, *a, **k):
+        return self._record("ilike", *a, **k)
 
     def order(self, *a, **k):
         return self._record("order", *a, **k)
@@ -1375,3 +1383,832 @@ class TestTileVisibility:
         result = service.get_status()
         assert result["active_partner_count"] == 0
         assert result["tile_visible"] is False
+
+
+# ================================
+# DISTANCE TO THE STUDENT'S UNIVERSITY
+# ================================
+
+class TestHaversine:
+    """
+    Straight-line distance in kilometres, behind the "x km away from
+    <university>" line on a partner tile.
+    """
+
+    def test_identical_points_are_zero(self):
+        assert haversine_km(25.1007, 55.1626, 25.1007, 55.1626) == 0.0
+
+    def test_one_degree_of_latitude_is_about_111_km(self):
+        """A meridian degree is ~111.2 km anywhere on Earth — the cheapest check
+        that the formula is not off by a radians/degrees conversion."""
+        km = haversine_km(25.0, 55.0, 26.0, 55.0)
+        assert 110.5 < km < 111.5
+
+    def test_known_dubai_pair(self):
+        """Heriot-Watt Dubai in Knowledge Park to Zayed University in Academic
+        City: roughly 25 km across the city."""
+        km = haversine_km(25.1007, 55.1626, 25.1263, 55.4185)
+        assert 23 < km < 27
+
+    def test_distance_is_symmetric(self):
+        there = haversine_km(25.1007, 55.1626, 24.2028, 55.6773)
+        back = haversine_km(24.2028, 55.6773, 25.1007, 55.1626)
+        assert there == back
+
+    def test_numeric_columns_arriving_as_strings_are_accepted(self):
+        """numeric(9,6) comes back from PostgREST as a string, not a float."""
+        assert haversine_km("25.0", "55.0", "26.0", "55.0") == haversine_km(
+            25.0, 55.0, 26.0, 55.0
+        )
+
+    def test_any_missing_coordinate_yields_none(self):
+        for args in (
+            (None, 55.0, 26.0, 55.0),
+            (25.0, None, 26.0, 55.0),
+            (25.0, 55.0, None, 55.0),
+            (25.0, 55.0, 26.0, None),
+        ):
+            assert haversine_km(*args) is None
+
+    def test_unusable_coordinate_is_none_not_an_exception(self):
+        """A blank or junk value must not take down the whole partner list."""
+        assert haversine_km("", 55.0, 26.0, 55.0) is None
+        assert haversine_km("not-a-number", 55.0, 26.0, 55.0) is None
+
+    def test_rounded_to_one_decimal(self):
+        km = haversine_km(25.0, 55.0, 25.3, 55.3)
+        assert km == round(km, 1)
+
+
+class TestDistanceLabel:
+    def test_label_names_the_university(self):
+        assert (
+            C.format_distance(12.4, "Zayed University (ZU)")
+            == "12.4 km away from Zayed University (ZU)"
+        )
+
+    def test_whole_numbers_still_show_a_decimal(self):
+        assert C.format_distance(3.0, "AUD") == "3.0 km away from AUD"
+
+    def test_no_distance_means_no_label(self):
+        assert C.format_distance(None, "AUD") is None
+
+    def test_no_university_means_no_label(self):
+        """Better a tile with no line than one ending in 'away from'."""
+        assert C.format_distance(3.4, None) is None
+        assert C.format_distance(3.4, "") is None
+
+
+class TestPartnerDistance:
+    def _partner(self, **overrides):
+        base = {"id": "p1", "latitude": 25.0, "longitude": 55.0}
+        base.update(overrides)
+        return base
+
+    def test_distance_from_a_partner_to_a_university(self):
+        uni = {"name": "AUD", "latitude": 26.0, "longitude": 55.0}
+        assert build_partner_distance(self._partner(), uni) is not None
+
+    def test_no_student_university_means_no_distance(self):
+        assert build_partner_distance(self._partner(), None) is None
+
+    def test_partner_without_coordinates_has_no_distance(self):
+        """Partners go live before their coordinates are filled in; the tile has
+        to survive that rather than report 0 km."""
+        uni = {"name": "AUD", "latitude": 26.0, "longitude": 55.0}
+        assert build_partner_distance(
+            self._partner(latitude=None, longitude=None), uni
+        ) is None
+
+    def test_university_without_coordinates_has_no_distance(self):
+        uni = {"name": "AUD", "latitude": None, "longitude": None}
+        assert build_partner_distance(self._partner(), uni) is None
+
+
+class TestStudentUniversityLookup:
+    """
+    users.university is free text on the OTP signup path, so the email domain is
+    the only reliable handle on which institution a student actually attends.
+    """
+
+    class _Seq:
+        """Returns a different row set per read, in order."""
+
+        def __init__(self, *batches):
+            self.batches = list(batches)
+            self.calls = []
+
+        def table(self, name):
+            self.calls.append(name)
+            return self
+
+        def select(self, *a, **k):
+            return self
+
+        def eq(self, *a, **k):
+            self.calls.append(("eq",) + a)
+            return self
+
+        def ilike(self, *a, **k):
+            self.calls.append(("ilike",) + a)
+            return self
+
+        def limit(self, *a, **k):
+            return self
+
+        def execute(self):
+            rows = self.batches.pop(0) if self.batches else []
+            return type("Res", (), {"data": rows, "count": len(rows)})()
+
+    def _wire(self, monkeypatch, fake):
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client", lambda: fake
+        )
+
+    def test_domain_is_matched_first(self, service, monkeypatch):
+        fake = self._Seq([{"university_name": "Heriot-Watt University Dubai",
+                           "domain": "hw.ac.uk",
+                           "latitude": 25.1007, "longitude": 55.1626}])
+        self._wire(monkeypatch, fake)
+
+        uni = service._student_university(
+            {"email": "Sarah@HW.ac.uk", "university": "whatever they typed"}
+        )
+
+        # The typed name is ignored: the domain is the reliable handle.
+        assert uni["name"] == "Heriot-Watt University Dubai"
+        assert ("ilike", "domain", "hw.ac.uk") in fake.calls
+
+    def test_a_domain_stored_with_capitals_still_matches(self, service, monkeypatch):
+        """university_domains is unique on lower(domain), so the table may hold
+        'HW.ac.uk'. An exact match against the lowercased email domain would miss
+        it and silently drop the distance line for everyone at that university."""
+        fake = self._Seq([{"university_name": "Heriot-Watt University Dubai",
+                           "domain": "HW.ac.uk",
+                           "latitude": 25.1007, "longitude": 55.1626}])
+        self._wire(monkeypatch, fake)
+
+        uni = service._student_university({"email": "sarah@hw.ac.uk"})
+
+        assert uni is not None
+        assert uni["name"] == "Heriot-Watt University Dubai"
+        assert any(
+            isinstance(c, tuple) and c[0] == "ilike" and c[1] == "domain"
+            for c in fake.calls
+        ), "the domain lookup should be case-insensitive"
+
+    def test_a_row_that_only_matches_the_like_pattern_is_rejected(self, service, monkeypatch):
+        """LIKE reads _ as a single-character wildcard, so 'a_c.edu' would also
+        match 'abc.edu'. The returned row has to be confirmed, not trusted."""
+        fake = self._Seq([{"university_name": "Somewhere Else",
+                           "domain": "abc.edu",
+                           "latitude": 25.0, "longitude": 55.0}])
+        self._wire(monkeypatch, fake)
+
+        uni = service._student_university({"email": "s@a_c.edu"})
+
+        # No name was given either, so there is nothing left to fall back to.
+        assert uni is None
+
+    def test_name_is_the_fallback_when_the_domain_is_unknown(self, service, monkeypatch):
+        fake = self._Seq([], [{"university_name": "University of Dubai (UD)",
+                               "latitude": 25.1268, "longitude": 55.4145}])
+        self._wire(monkeypatch, fake)
+
+        uni = service._student_university(
+            {"email": "s@unknown.example", "university": "University of Dubai (UD)"}
+        )
+
+        assert uni["name"] == "University of Dubai (UD)"
+        assert any(
+            isinstance(c, tuple) and c[0] == "ilike" for c in fake.calls
+        )
+
+    def test_unknown_university_still_carries_the_typed_name(self, service, monkeypatch):
+        """So the label reads correctly the day coordinates are added for it."""
+        self._wire(monkeypatch, self._Seq([], []))
+        uni = service._student_university(
+            {"email": "s@unknown.example", "university": "Some New College"}
+        )
+        assert uni == {"name": "Some New College", "latitude": None, "longitude": None}
+
+    def test_no_student_means_no_lookup(self, service):
+        assert service._student_university(None) is None
+
+    def test_no_email_and_no_university_means_no_lookup(self, service):
+        assert service._student_university({"id": "student-1"}) is None
+
+    def test_a_failed_lookup_does_not_break_the_tiles(self, service, monkeypatch):
+        """The housing screen must render without the distance line rather than
+        500 because a lookup table is unreachable."""
+
+        class Boom:
+            def table(self, name):
+                raise RuntimeError("postgrest down")
+
+        self._wire(monkeypatch, Boom())
+        assert service._student_university({"email": "s@hw.ac.uk"}) is None
+
+
+class TestPartnerTilesCarryDistance:
+    def _row(self, **overrides):
+        base = {
+            "id": "p1", "name": "Nescapmus", "property_name": "Campus-1",
+            "price_disclosure_enabled": True,
+            "latitude": 25.0, "longitude": 55.0,
+            "baitna_listings": [],
+        }
+        base.update(overrides)
+        return base
+
+    def _run(self, service, monkeypatch, rows, university):
+        query = FakeQuery(rows=rows)
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client",
+            lambda: FakeSupabase(query),
+        )
+        monkeypatch.setattr(
+            BaitnaService, "_student_university", lambda self, s: university
+        )
+        return query, service.list_partners({"email": "s@hw.ac.uk"})
+
+    def _selected(self, query):
+        return " ".join(
+            str(arg) for args, _ in query.filters("select") for arg in args
+        )
+
+    def test_tile_reports_distance_and_label(self, service, monkeypatch):
+        uni = {"name": "Heriot-Watt University Dubai",
+               "latitude": 26.0, "longitude": 55.0}
+        _, result = self._run(service, monkeypatch, [self._row()], uni)
+
+        tile = result["partners"][0]
+        assert tile["distance_km"] is not None
+        assert tile["distance_label"].endswith("away from Heriot-Watt University Dubai")
+        assert tile["distance_label"].startswith(str(tile["distance_km"]))
+
+    def test_coordinates_are_requested_from_the_partners_table(self, service, monkeypatch):
+        query, _ = self._run(service, monkeypatch, [], None)
+        selected = self._selected(query)
+        assert "latitude" in selected and "longitude" in selected
+
+    def test_partner_without_coordinates_reports_none(self, service, monkeypatch):
+        uni = {"name": "AUD", "latitude": 26.0, "longitude": 55.0}
+        _, result = self._run(
+            service, monkeypatch, [self._row(latitude=None, longitude=None)], uni
+        )
+        tile = result["partners"][0]
+        assert tile["distance_km"] is None
+        assert tile["distance_label"] is None
+
+    def test_tiles_still_build_without_a_student(self, service, monkeypatch):
+        """The student argument is optional, so nothing about the existing tile
+        breaks for a caller that does not pass one."""
+        query = FakeQuery(rows=[self._row()])
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client",
+            lambda: FakeSupabase(query),
+        )
+        result = service.list_partners()
+        assert result["partners"][0]["distance_km"] is None
+
+    def test_the_university_is_looked_up_once_for_the_whole_page(self, service, monkeypatch):
+        seen = []
+        query = FakeQuery(rows=[self._row(id="p1"), self._row(id="p2"),
+                                self._row(id="p3")])
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client",
+            lambda: FakeSupabase(query),
+        )
+
+        def one_lookup(self, student):
+            seen.append(student)
+            return {"name": "AUD", "latitude": 26.0, "longitude": 55.0}
+
+        monkeypatch.setattr(BaitnaService, "_student_university", one_lookup)
+        service.list_partners({"email": "s@aud.edu"})
+        assert len(seen) == 1
+
+
+# ================================
+# SWITCHING THE UNIT ON AN OPEN INQUIRY
+# ================================
+
+class TestSwitchFlags:
+    """What the app uses to draw the button next to Withdraw."""
+
+    def test_offered_while_the_partner_has_not_replied(self):
+        for status in C.SWITCH_ELIGIBLE_STATUSES:
+            assert compute_can_switch_listing(status, 0, limit=2) is True
+
+    def test_not_offered_once_the_partner_has_acknowledged(self):
+        """The partner has read the student's details and started working that
+        specific unit, so it is settled."""
+        assert compute_can_switch_listing("acknowledged", 0, limit=2) is False
+
+    def test_never_offered_on_a_closed_lead(self):
+        """baitna_switch_listing answers BT006 on these, so advertising the
+        button would be a promise the endpoint breaks."""
+        for status in C.TERMINAL_STATUSES:
+            assert compute_can_switch_listing(status, 0, limit=2) is False
+
+    def test_switching_is_narrower_than_withdrawing(self):
+        """Both buttons sit on the same row of the same card, but they do not
+        appear and disappear together: withdrawing consent has to work at every
+        live stage, switching stops once the partner replies. Anything the switch
+        button is offered on must still be withdrawable, though — a lead that can
+        be moved but not pulled back would be the wrong way round."""
+        assert C.SWITCH_ELIGIBLE_STATUSES < C.OPEN_STATUSES
+        for status in C.LEAD_STATUS_LABELS:
+            if compute_can_switch_listing(status, 0, limit=2):
+                assert compute_can_withdraw(status)
+
+    def test_acknowledged_is_the_only_difference(self):
+        """If another status ever separates the two buttons, it should be a
+        deliberate decision rather than a silent one."""
+        assert C.OPEN_STATUSES - C.SWITCH_ELIGIBLE_STATUSES == {"acknowledged"}
+
+    def test_withdraw_is_still_offered_on_an_acknowledged_lead(self):
+        """Losing the switch button must not take the withdraw button with it —
+        a student whose details have actually been read is the one who most needs
+        it."""
+        assert compute_can_withdraw("acknowledged") is True
+
+    def test_withdrawn_once_the_quota_is_spent(self):
+        assert compute_can_switch_listing("posted_to_dashboard", 2, limit=2) is False
+
+    def test_still_offered_with_one_left(self):
+        assert compute_can_switch_listing("posted_to_dashboard", 1, limit=2) is True
+
+    def test_remaining_counts_down(self):
+        assert compute_switches_remaining(0, limit=2) == 2
+        assert compute_switches_remaining(1, limit=2) == 1
+        assert compute_switches_remaining(2, limit=2) == 0
+
+    def test_remaining_never_goes_negative(self):
+        """Lowering the quota below what someone already spent must not put a
+        minus sign on the button."""
+        assert compute_switches_remaining(5, limit=2) == 0
+
+    def test_lead_row_carries_the_switch_fields(self):
+        row = build_lead_row(
+            {
+                "id": "lead-1",
+                "lead_reference": "BAITNA-NES-260819-0042",
+                "status": "posted_to_dashboard",
+                "listing_id": "listing-1",
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "baitna_partners": {"name": "Nescapmus"},
+                "baitna_listings": {"unit_type": "studio"},
+            },
+            switches_used=1,
+        )
+        assert row["can_switch_listing"] is True
+        assert row["switches_remaining"] == 1
+        assert row["listing_id"] == "listing-1"
+
+    def test_lead_row_defaults_to_a_full_allowance(self):
+        """A caller that does not pass a count must not accidentally hide the
+        button."""
+        row = build_lead_row({
+            "id": "lead-1", "lead_reference": "R", "status": "posted_to_dashboard",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "baitna_partners": {"name": "N"},
+            "baitna_listings": {"unit_type": "studio"},
+        })
+        assert row["can_switch_listing"] is True
+
+
+class TestSwitchCounts:
+    """The per-partner tally behind switches_remaining on the inquiry list."""
+
+    def _wire(self, monkeypatch, rows):
+        query = FakeQuery(rows=rows)
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client",
+            lambda: FakeSupabase(query),
+        )
+        return query
+
+    def test_counts_are_grouped_by_partner(self, service, monkeypatch):
+        self._wire(monkeypatch, [
+            {"partner_id": "p1"}, {"partner_id": "p1"}, {"partner_id": "p2"},
+        ])
+        assert service._switch_counts_by_partner("student-1") == {"p1": 2, "p2": 1}
+
+    def test_the_window_is_a_cutoff_not_the_whole_history(self, service, monkeypatch):
+        from app.core.config import Settings
+
+        query = self._wire(monkeypatch, [])
+        service._switch_counts_by_partner("student-1")
+
+        assert query.filters("gt"), "no switched_at cutoff applied"
+        column, cutoff = query.filters("gt")[0][0]
+        assert column == "switched_at"
+        expected = datetime.now(timezone.utc) - timedelta(
+            days=Settings().BAITNA_LISTING_SWITCH_WINDOW_DAYS
+        )
+        assert abs((datetime.fromisoformat(cutoff) - expected).total_seconds()) < 60
+
+    def test_scoped_to_the_student(self, service, monkeypatch):
+        query = self._wire(monkeypatch, [])
+        service._switch_counts_by_partner("student-1")
+        assert query.has_filter("eq", "student_id", "student-1")
+
+    def test_a_failure_does_not_break_the_inquiry_list(self, service, monkeypatch):
+        """The database counts the rows itself and is the authority, so the worst
+        an empty tally does is offer a button the endpoint then refuses."""
+
+        class Boom:
+            def table(self, name):
+                raise RuntimeError("postgrest down")
+
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client", lambda: Boom()
+        )
+        assert service._switch_counts_by_partner("student-1") == {}
+
+    def test_the_lead_list_asks_for_partner_and_listing_ids(self, service, monkeypatch):
+        """Without partner_id the per-partner tally cannot be matched to a row."""
+        query = self._wire(monkeypatch, [])
+        service.list_student_leads("student-1")
+        selected = " ".join(
+            str(arg) for args, _ in query.filters("select") for arg in args
+        )
+        assert "partner_id" in selected and "listing_id" in selected
+
+
+class TestSwitchErrorMapping:
+    def test_missing_lead_maps_to_404(self):
+        err = BaitnaService._translate_switch_error(
+            _PgError(C.SQLSTATE_SWITCH_LEAD_NOT_FOUND)
+        )
+        assert err.status_code == 404
+        assert err.code == C.CODE_LEAD_NOT_FOUND
+
+    def test_closed_lead_maps_to_409(self):
+        err = BaitnaService._translate_switch_error(
+            _PgError(C.SQLSTATE_SWITCH_LEAD_CLOSED)
+        )
+        assert err.status_code == 409
+        assert err.code == C.CODE_ALREADY_CLOSED
+
+    def test_foreign_or_inactive_listing_maps_to_404(self):
+        err = BaitnaService._translate_switch_error(
+            _PgError(C.SQLSTATE_SWITCH_LISTING_INVALID)
+        )
+        assert err.status_code == 404
+        assert err.code == C.CODE_LISTING_NOT_FOUND
+
+    def test_same_listing_maps_to_409(self):
+        err = BaitnaService._translate_switch_error(
+            _PgError(C.SQLSTATE_SWITCH_SAME_LISTING)
+        )
+        assert err.status_code == 409
+        assert err.code == C.CODE_SAME_LISTING
+
+    def test_quota_maps_to_409_and_carries_the_eligible_date(self):
+        err = BaitnaService._translate_switch_error(
+            _PgError(
+                C.SQLSTATE_SWITCH_LIMIT,
+                message="You have already changed your unit twice with this "
+                        "partner. You can change it again after 2026-10-14.",
+                details="2026-10-14",
+            )
+        )
+        assert err.status_code == 409
+        assert err.code == C.CODE_SWITCH_LIMIT_REACHED
+        assert err.data == {"eligible_from": "2026-10-14"}
+
+    def test_the_three_conflicts_are_distinguishable(self):
+        """All 409s, so the status alone cannot tell the app which message to
+        show or whether a retry is worth offering."""
+        codes = {
+            BaitnaService._translate_switch_error(_PgError(state)).code
+            for state in (
+                C.SQLSTATE_SWITCH_LEAD_CLOSED,
+                C.SQLSTATE_SWITCH_SAME_LISTING,
+                C.SQLSTATE_SWITCH_LIMIT,
+            )
+        }
+        assert len(codes) == 3
+
+    def test_unknown_error_maps_to_500(self):
+        err = BaitnaService._translate_switch_error(_PgError("42883"))
+        assert err.status_code == 500
+        assert err.code == C.CODE_INTERNAL
+
+    def test_sqlstate_recovered_from_the_string_form(self):
+        """supabase-py does not always expose .code, so every Baitna SQLSTATE has
+        to survive the string scan or it degrades to a 500."""
+        from app.modules.baitna.service import _sqlstate_of
+
+        for state in C.BAITNA_SQLSTATES:
+            assert _sqlstate_of(Exception('{"code":"' + state + '"}')) == state
+
+
+class TestSwitchListing:
+    LEAD = "11111111-1111-1111-1111-111111111111"
+    LISTING = "22222222-2222-2222-2222-222222222222"
+
+    class _Rpc:
+        def __init__(self, payload=None, raises=None):
+            self.payload = payload
+            self.raises = raises
+            self.called_with = None
+
+        def rpc(self, name, params):
+            self.called_with = (name, params)
+            outer = self
+
+            class _Exec:
+                def execute(self):
+                    if outer.raises:
+                        raise outer.raises
+                    return type("Res", (), {"data": outer.payload})()
+
+            return _Exec()
+
+    def _wire(self, monkeypatch, fake):
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client", lambda: fake
+        )
+
+    def test_calls_the_function_with_the_three_ids(self, service, monkeypatch):
+        fake = self._Rpc({"lead_id": self.LEAD, "unit_type": "studio",
+                          "switches_remaining": 1})
+        self._wire(monkeypatch, fake)
+
+        service.switch_listing("student-1", self.LEAD, self.LISTING)
+
+        name, params = fake.called_with
+        assert name == "baitna_switch_listing"
+        assert params == {
+            "p_student_id": "student-1",
+            "p_lead_id": self.LEAD,
+            "p_listing_id": self.LISTING,
+        }
+
+    def test_the_partner_is_never_a_parameter(self, service, monkeypatch):
+        """It is read off the lead inside the function, which is what stops this
+        endpoint moving a student to a partner they never consented to."""
+        fake = self._Rpc({"unit_type": "studio", "switches_remaining": 0})
+        self._wire(monkeypatch, fake)
+        service.switch_listing("student-1", self.LEAD, self.LISTING)
+        assert "p_partner_id" not in fake.called_with[1]
+
+    def test_message_pluralises_the_remaining_count(self, service, monkeypatch):
+        self._wire(monkeypatch, self._Rpc({"unit_type": "studio",
+                                           "switches_remaining": 1}))
+        one = service.switch_listing("student-1", self.LEAD, self.LISTING)
+        assert "1 more time " in one["message"]
+
+        self._wire(monkeypatch, self._Rpc({"unit_type": "studio",
+                                           "switches_remaining": 0}))
+        none = service.switch_listing("student-1", self.LEAD, self.LISTING)
+        assert "0 more times " in none["message"]
+
+    def test_a_row_wrapped_in_a_list_is_unwrapped(self, service, monkeypatch):
+        self._wire(monkeypatch, self._Rpc([{"unit_type": "studio",
+                                            "switches_remaining": 1}]))
+        result = service.switch_listing("student-1", self.LEAD, self.LISTING)
+        assert result["unit_type"] == "studio"
+
+    def test_an_empty_result_is_a_500_not_a_silent_success(self, service, monkeypatch):
+        self._wire(monkeypatch, self._Rpc(None))
+        with pytest.raises(BaitnaError) as exc:
+            service.switch_listing("student-1", self.LEAD, self.LISTING)
+        assert exc.value.status_code == 500
+
+    def test_malformed_lead_id_is_a_404_not_a_500(self, service, monkeypatch):
+        """A bad uuid would otherwise reach Postgres as a failed cast."""
+        self._wire(monkeypatch, self._Rpc({}))
+        for bad in ["not-a-uuid", "", "123"]:
+            with pytest.raises(BaitnaError) as exc:
+                service.switch_listing("student-1", bad, self.LISTING)
+            assert exc.value.status_code == 404
+            assert exc.value.code == C.CODE_LEAD_NOT_FOUND
+
+    def test_malformed_listing_id_is_a_404_too(self, service, monkeypatch):
+        self._wire(monkeypatch, self._Rpc({}))
+        with pytest.raises(BaitnaError) as exc:
+            service.switch_listing("student-1", self.LEAD, "not-a-uuid")
+        assert exc.value.status_code == 404
+        assert exc.value.code == C.CODE_LISTING_NOT_FOUND
+
+    def test_database_errors_are_translated(self, service, monkeypatch):
+        self._wire(
+            monkeypatch,
+            self._Rpc(raises=_PgError(C.SQLSTATE_SWITCH_LIMIT, details="2026-10-14")),
+        )
+        with pytest.raises(BaitnaError) as exc:
+            service.switch_listing("student-1", self.LEAD, self.LISTING)
+        assert exc.value.code == C.CODE_SWITCH_LIMIT_REACHED
+
+    def test_the_request_body_takes_only_a_listing(self):
+        """No partner_id field, so the body cannot redirect the inquiry
+        elsewhere."""
+        assert set(ListingSwitchRequest.model_fields) == {"listing_id"}
+
+    def test_a_malformed_listing_id_is_rejected_by_the_schema(self):
+        with pytest.raises(ValidationError):
+            ListingSwitchRequest(listing_id="not-a-uuid")
+
+
+
+class TestAcknowledgedCannotSwitch:
+    """
+    Once the partner has replied, the unit on the inquiry is settled. The lead is
+    still live — the student can withdraw it — but it can no longer be moved.
+    """
+
+    LEAD = "11111111-1111-1111-1111-111111111111"
+    LISTING = "22222222-2222-2222-2222-222222222222"
+
+    def test_acknowledged_maps_to_its_own_409(self):
+        err = BaitnaService._translate_switch_error(
+            _PgError(C.SQLSTATE_SWITCH_ACKNOWLEDGED)
+        )
+        assert err.status_code == 409
+        assert err.code == C.CODE_ALREADY_ACKNOWLEDGED
+        assert "already responded" in err.message
+
+    def test_it_is_not_reported_as_a_closed_inquiry(self):
+        """ALREADY_CLOSED would tell the student their inquiry is over, when it
+        is live and they can still withdraw it."""
+        acknowledged = BaitnaService._translate_switch_error(
+            _PgError(C.SQLSTATE_SWITCH_ACKNOWLEDGED)
+        )
+        closed = BaitnaService._translate_switch_error(
+            _PgError(C.SQLSTATE_SWITCH_LEAD_CLOSED)
+        )
+        assert acknowledged.code != closed.code
+        assert "closed" not in acknowledged.message.lower()
+
+    def test_the_lead_row_hides_the_button(self, service, monkeypatch):
+        row = build_lead_row(
+            {
+                "id": "lead-1",
+                "lead_reference": "BAITNA-NES-260819-0042",
+                "status": "acknowledged",
+                "listing_id": "listing-1",
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "acknowledged_at": datetime.now(timezone.utc).isoformat(),
+                "baitna_partners": {"name": "Nescapmus"},
+                "baitna_listings": {"unit_type": "studio"},
+            },
+            switches_used=0,
+        )
+        assert row["can_switch_listing"] is False
+        # Still live: the other two actions are unchanged by this rule.
+        assert row["can_withdraw"] is True
+
+    def test_an_unspent_allowance_does_not_reopen_it(self, service):
+        """The status check has to come first — plenty of switches left is not a
+        reason to move an acknowledged lead."""
+        assert compute_switches_remaining(0, limit=2) == 2
+        assert compute_can_switch_listing("acknowledged", 0, limit=2) is False
+
+    def test_the_endpoint_surfaces_the_database_refusal(self, service, monkeypatch):
+        """The service flag is only advice; the function is what actually
+        enforces it, so a stale client still gets the right answer."""
+
+        class _Rpc:
+            def rpc(self, name, params):
+                class _Exec:
+                    def execute(self):
+                        raise _PgError(
+                            C.SQLSTATE_SWITCH_ACKNOWLEDGED,
+                            message="This partner has already responded to your "
+                                    "inquiry, so its unit can no longer be changed.",
+                        )
+
+                return _Exec()
+
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client", lambda: _Rpc()
+        )
+        with pytest.raises(BaitnaError) as exc:
+            service.switch_listing("student-1", self.LEAD, self.LISTING)
+        assert exc.value.status_code == 409
+        assert exc.value.code == C.CODE_ALREADY_ACKNOWLEDGED
+
+    def test_rerouting_and_switching_agree_about_acknowledged(self):
+        """Both refuse it for the same reason: the partner did respond, so there
+        is neither silence to route away from nor an unworked unit to move."""
+        assert "acknowledged" not in C.FALLBACK_ELIGIBLE_STATUSES
+        assert "acknowledged" not in C.SWITCH_ELIGIBLE_STATUSES
+
+# ================================
+# THE SWITCH MIGRATION AND THE CODE AGREE
+# ================================
+
+class TestSwitchSqlAgrees:
+    """
+    baitna_switch_listing is the authority on the quota and on which leads may
+    move. The service only decides what the app is told it has left, so drift
+    shows a button the database then refuses.
+    """
+
+    MIGRATION = (
+        Path(__file__).resolve().parents[2]
+        / "migrations" / "versions" / "20260914_add_baitna_switch_and_distance.sql"
+    )
+
+    def sql(self):
+        return self.MIGRATION.read_text(encoding="utf-8")
+
+    def test_switch_quota_matches_the_function(self):
+        from app.core.config import Settings
+
+        limit = re.search(
+            r"c_limit\s+constant\s+integer\s*:=\s*(\d+)", self.sql()
+        )
+        assert limit, "the declared allowance was not found in baitna_switch_listing"
+        assert int(limit.group(1)) == Settings().BAITNA_LISTING_SWITCH_LIMIT
+
+    def test_the_allowance_is_written_down_only_once(self):
+        """The function both enforces the allowance and reports what is left of
+        it. Written as two literals, raising the limit in one place and not the
+        other would tell the student they have a switch the function refuses —
+        and this suite would not notice."""
+        sql = self.sql()
+        assert "IF v_used >= c_limit THEN" in sql
+        assert "c_limit - (v_used + 1)" in sql
+        assert not re.search(r"IF v_used >= \d", sql)
+
+    def test_switch_window_matches_the_function(self):
+        from app.core.config import Settings
+
+        intervals = set(re.findall(r"interval '(\d+) days'", self.sql()))
+        assert intervals, "no rolling window found"
+        assert intervals == {str(Settings().BAITNA_LISTING_SWITCH_WINDOW_DAYS)}
+
+    def test_the_switchable_statuses_match_the_function(self):
+        """Narrower SQL refuses a lead the service shows a button on; wider SQL
+        lets a settled or closed inquiry be moved."""
+        guard = re.search(r"v_lead\.status NOT IN \(([^)]*)\)", self.sql())
+        assert guard, "switchable-status guard not found in baitna_switch_listing"
+        assert set(re.findall(r"'([a-z_]+)'", guard.group(1))) == set(
+            C.SWITCH_ELIGIBLE_STATUSES
+        )
+
+    def test_the_function_turns_acknowledged_leads_away(self):
+        """And with its own SQLSTATE, so the student is told the partner replied
+        rather than that their inquiry is closed."""
+        sql = self.sql()
+        assert re.search(
+            r"IF v_lead\.status = 'acknowledged' THEN.*?ERRCODE = 'BT010'", sql, re.S
+        )
+        assert "acknowledged" not in re.search(
+            r"v_lead\.status NOT IN \(([^)]*)\)", sql
+        ).group(1)
+
+    def test_the_switchable_set_is_a_subset_of_the_open_set(self):
+        """A status the function accepts but the unique index treats as closed
+        would let a lead be moved after it stopped blocking new inquiries."""
+        assert C.SWITCH_ELIGIBLE_STATUSES <= C.OPEN_STATUSES
+
+    def test_the_function_is_not_callable_with_the_anon_key(self):
+        """The anon key ships inside the mobile app; anyone holding it must not
+        be able to move someone else's inquiry."""
+        sql = self.sql()
+        assert re.search(
+            r"REVOKE ALL ON FUNCTION baitna_switch_listing[^;]*anon", sql, re.S
+        )
+        assert re.search(
+            r"GRANT EXECUTE ON FUNCTION baitna_switch_listing[^;]*service_role",
+            sql, re.S,
+        )
+
+    def test_the_switch_log_has_row_level_security(self):
+        assert (
+            "ALTER TABLE baitna_lead_listing_switches ENABLE ROW LEVEL SECURITY"
+            in self.sql()
+        )
+
+    def test_the_partner_comes_from_the_lead_not_the_caller(self):
+        """The one line keeping a switch inside the partner the student already
+        consented to."""
+        assert "AND partner_id = v_lead.partner_id" in self.sql()
+
+    def test_every_sqlstate_the_function_raises_is_mapped(self):
+        raised = set(re.findall(r"ERRCODE = '(BT\d+)'", self.sql()))
+        assert raised, "no SQLSTATEs found in the switch function"
+        assert raised <= set(C.BAITNA_SQLSTATES)
+        for state in raised:
+            err = BaitnaService._translate_switch_error(_PgError(state))
+            assert err.code != C.CODE_INTERNAL, state + " falls through to a 500"
+
+    def test_coordinates_are_added_to_both_sides_of_the_calculation(self):
+        sql = self.sql()
+        for table in ("baitna_partners", "university_domains"):
+            assert re.search(
+                r"ALTER TABLE " + table + r"\s+ADD COLUMN IF NOT EXISTS latitude", sql
+            ), table
+
+    def test_seeded_coordinates_do_not_overwrite_corrected_ones(self):
+        """A coordinate fixed by hand must survive a re-run of the migration."""
+        sql = self.sql()
+        assert "AND u.latitude IS NULL" in sql
+        assert "AND u.longitude IS NULL" in sql

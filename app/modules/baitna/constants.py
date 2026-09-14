@@ -6,7 +6,7 @@ lists; test_baitna_service.TestEnumsAgree fails if they drift apart.
 """
 
 from datetime import timedelta, timezone
-from typing import Dict, FrozenSet
+from typing import Dict, FrozenSet, Optional, Tuple
 
 # ================================
 # DISPLAY LABELS
@@ -45,6 +45,9 @@ LEAD_STATUS_LABELS: Dict[str, str] = {
 
 PRICE_HIDDEN_DISPLAY = "Confirmed on inquiry"
 
+# Mean Earth radius, the usual choice for a haversine distance.
+EARTH_RADIUS_KM = 6371.0088
+
 
 # Lead references are issued on the Asia/Dubai calendar day, so date validation
 # uses the same clock. Dubai has no DST, so a fixed offset is exact and avoids a
@@ -73,6 +76,15 @@ OPEN_STATUSES: FrozenSet[str] = frozenset(
 # status in neither would report can_withdraw: false while withdraw() accepted it.
 TERMINAL_STATUSES: FrozenSet[str] = frozenset(
     {"converted", "routed", "withdrawn", "closed_no_match", "expired_stale"}
+)
+
+# Switchable statuses. Narrower than OPEN_STATUSES on purpose: once a partner has
+# acknowledged an inquiry they have read the student's details and started
+# working that specific unit, so moving the lead under them changes what they
+# already picked up. Withdrawing stays available on an acknowledged lead — see
+# OPEN_STATUSES — because revoking consent has to work at every stage.
+SWITCH_ELIGIBLE_STATUSES: FrozenSet[str] = frozenset(
+    {"submitted", "posted_to_dashboard", "aging"}
 )
 
 # Reroutable statuses. Age is also required — see service.compute_can_fallback.
@@ -124,11 +136,41 @@ CODE_STUDENT_NOT_FOUND = "STUDENT_NOT_FOUND"
 CODE_EMAIL_FAILED = "EMAIL_FAILED"
 CODE_INTERNAL = "INTERNAL_ERROR"
 
+# Switching the unit on an open inquiry.
+CODE_LISTING_NOT_FOUND = "LISTING_NOT_FOUND"
+CODE_SAME_LISTING = "SAME_LISTING"
+CODE_ALREADY_ACKNOWLEDGED = "ALREADY_ACKNOWLEDGED"
+CODE_SWITCH_LIMIT_REACHED = "SWITCH_LIMIT_REACHED"
+
 # SQLSTATEs raised by baitna_create_lead / its triggers.
 SQLSTATE_OPEN_INQUIRY = "BT001"
 SQLSTATE_COOLDOWN = "BT002"
 SQLSTATE_PARTNER_INACTIVE = "BT003"
 SQLSTATE_STUDENT_NOT_FOUND = "BT004"
+
+# SQLSTATEs raised by baitna_switch_listing.
+SQLSTATE_SWITCH_LEAD_NOT_FOUND = "BT005"
+SQLSTATE_SWITCH_LEAD_CLOSED = "BT006"
+SQLSTATE_SWITCH_LISTING_INVALID = "BT007"
+SQLSTATE_SWITCH_SAME_LISTING = "BT008"
+SQLSTATE_SWITCH_LIMIT = "BT009"
+SQLSTATE_SWITCH_ACKNOWLEDGED = "BT010"
+
+# Every SQLSTATE the module raises. _sqlstate_of falls back to scanning the
+# string form of an exception for these, so a code missing here is read as an
+# unknown failure and answered with a 500.
+BAITNA_SQLSTATES: Tuple[str, ...] = (
+    SQLSTATE_OPEN_INQUIRY,
+    SQLSTATE_COOLDOWN,
+    SQLSTATE_PARTNER_INACTIVE,
+    SQLSTATE_STUDENT_NOT_FOUND,
+    SQLSTATE_SWITCH_LEAD_NOT_FOUND,
+    SQLSTATE_SWITCH_LEAD_CLOSED,
+    SQLSTATE_SWITCH_LISTING_INVALID,
+    SQLSTATE_SWITCH_SAME_LISTING,
+    SQLSTATE_SWITCH_LIMIT,
+    SQLSTATE_SWITCH_ACKNOWLEDGED,
+)
 
 # Postgres unique violation. The IF EXISTS guard inside baitna_create_lead is not
 # atomic with the insert, so two submissions in flight at once both pass it and
@@ -161,3 +203,17 @@ def format_price(amount, currency: str = "AED") -> str:
     if value.is_integer():
         return f"{currency} {int(value):,} / month"
     return f"{currency} {value:,.2f} / month"
+
+
+def format_distance(km: Optional[float], university_name: Optional[str]) -> Optional[str]:
+    """
+    '3.4 km away from Heriot-Watt University Dubai'.
+
+    None when either half is missing, which is the signal to the app that this
+    line has nothing to show — a partner with no coordinates on file, or a
+    student whose university we can't place, gets a tile with no distance rather
+    than a tile claiming 0 km.
+    """
+    if km is None or not university_name:
+        return None
+    return f"{km:.1f} km away from {university_name}"

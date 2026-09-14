@@ -129,6 +129,13 @@ class Settings(BaseSettings):
     # will offer a partner the database then rejects with BT002, so change both
     # together — test_cooldown_setting_matches_the_trigger guards the pair.
     BAITNA_LEAD_COOLDOWN_DAYS: int = 30
+    # How often a student may move an open inquiry onto a different unit from the
+    # same partner. baitna_switch_listing hardcodes the same pair and is the
+    # authority; these values only decide what the app is told it has left, so a
+    # mismatch shows the wrong count on the button —
+    # test_switch_quota_matches_the_function guards the pair.
+    BAITNA_LISTING_SWITCH_LIMIT: int = 2
+    BAITNA_LISTING_SWITCH_WINDOW_DAYS: int = 30
     BAITNA_LISTINGS_PAGE_SIZE: int = 20
     BAITNA_LISTINGS_MAX_PAGE_SIZE: int = 50
     

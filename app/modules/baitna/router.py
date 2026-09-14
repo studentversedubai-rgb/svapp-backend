@@ -22,6 +22,7 @@ from app.modules.baitna.schemas import (
     FallbackRouteRequest,
     LeadCreateRequest,
     ListingFilters,
+    ListingSwitchRequest,
     WithdrawRequest,
 )
 from app.modules.baitna.service import BaitnaError, BaitnaService
@@ -111,7 +112,12 @@ async def get_baitna_status(
     description=(
         "Requires a student JWT. Returns every active partner with its active "
         "listings. When a partner has price_disclosure_enabled off, all of its "
-        "listings report a null price and 'Confirmed on inquiry'."
+        "listings report a null price and 'Confirmed on inquiry'.\n\n"
+        "Each tile also carries distance_km and distance_label — the straight-line "
+        "distance to the caller's university, e.g. '12.4 km away from Zayed "
+        "University (ZU)'. Both are null when the partner has no coordinates on "
+        "file or the student's university cannot be placed; render the tile "
+        "without that line rather than showing a zero."
     ),
 )
 async def list_partners(
@@ -119,7 +125,7 @@ async def list_partners(
     service: BaitnaService = Depends(get_baitna_service),
 ):
     try:
-        return baitna_ok(service.list_partners())
+        return baitna_ok(service.list_partners(current_user))
     except BaitnaError as exc:
         return baitna_error(exc.status_code, exc.message, exc.code, exc.data)
 
@@ -161,6 +167,11 @@ async def browse_listings(
     "/leads",
     dependencies=[Depends(require_baitna_enabled)],
     summary="The student's own inquiries",
+    description=(
+        "Requires a student JWT. can_withdraw, can_fallback and can_switch_listing "
+        "say which actions to offer on each row; switches_remaining is how many "
+        "unit changes are left with that partner in the current 30-day window."
+    ),
 )
 async def list_leads(
     current_user: Dict = Depends(get_current_user),
@@ -338,6 +349,60 @@ async def resend_confirmation(
         )
 
     return baitna_ok({"message": "Confirmation email resent to your registered email."})
+
+
+# ================================
+# POST /baitna/leads/{lead_id}/listing/switch
+# ================================
+
+@router.post(
+    "/leads/{lead_id}/listing/switch",
+    dependencies=[Depends(require_baitna_enabled)],
+    summary="Change the unit on an open inquiry",
+    description=(
+        "Requires a student JWT. Moves an open inquiry onto a different active "
+        "listing belonging to the same partner. The lead keeps its reference, its "
+        "consent record and its submitted_at — only the unit changes, and the "
+        "partner dashboard picks the new one up on its own.\n\n"
+        "The partner is read from the lead, never from the body, so this can only "
+        "move a student between units of the partner they already consented to. "
+        "Pick the target from GET /baitna/partners or "
+        "GET /baitna/listings?partner_id=...\n\n"
+        "A student may do this twice per partner in any rolling 30 days. "
+        "Only while the partner has not replied: once the lead is acknowledged "
+        "the unit is settled and this returns 409 ALREADY_ACKNOWLEDGED. The "
+        "inquiry is still live at that point, so Withdraw stays available — "
+        "can_switch_listing on GET /baitna/leads is the flag to draw the button "
+        "from, not can_withdraw.\n\n"
+        "409 SWITCH_LIMIT_REACHED once the allowance is spent, with the eligible "
+        "date in data.eligible_from; 409 ALREADY_CLOSED on a closed inquiry; 409 "
+        "SAME_LISTING when the unit is already the one on the lead; 404 "
+        "LISTING_NOT_FOUND when the unit is inactive or belongs to someone else."
+    ),
+)
+async def switch_listing(
+    lead_id: str,
+    payload: ListingSwitchRequest,
+    current_user: Dict = Depends(get_current_user),
+    service: BaitnaService = Depends(get_baitna_service),
+):
+    # The twice-per-30-days quota is enforced in the database and is the real
+    # rule; this only stops a client retrying in a loop against it.
+    RateLimiter.check_generic_limit(
+        key=f"rl:baitna:switch:{current_user['id']}",
+        limit=10,
+        window=3600,
+        error_message="You've changed your unit several times recently. Please try again later.",
+    )
+
+    try:
+        return baitna_ok(
+            service.switch_listing(
+                current_user["id"], lead_id, str(payload.listing_id)
+            )
+        )
+    except BaitnaError as exc:
+        return baitna_error(exc.status_code, exc.message, exc.code, exc.data)
 
 
 # ================================

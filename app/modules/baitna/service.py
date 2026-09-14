@@ -8,6 +8,7 @@ app-wide handler would rewrite our 404 messages and drop the structured payloads
 """
 
 import logging
+import math
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
@@ -56,12 +57,7 @@ def _sqlstate_of(exc: Exception) -> Optional[str]:
         return code
 
     text = str(exc)
-    for candidate in (
-        C.SQLSTATE_OPEN_INQUIRY,
-        C.SQLSTATE_COOLDOWN,
-        C.SQLSTATE_PARTNER_INACTIVE,
-        C.SQLSTATE_STUDENT_NOT_FOUND,
-    ):
+    for candidate in C.BAITNA_SQLSTATES:
         if candidate in text:
             return candidate
     return None
@@ -170,8 +166,94 @@ def _parse_date(value) -> Optional[date]:
         return None
 
 
+def _is_uuid(value) -> bool:
+    """A well-formed id. Anything else must be turned away here, because it
+    reaches Postgres as a failed cast and surfaces as a 500."""
+    try:
+        UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _coord(value) -> Optional[float]:
+    """One coordinate as a float. numeric(9,6) arrives as a string from
+    PostgREST, and a blank or malformed value must read as 'no coordinate'
+    rather than raise in the middle of building a tile."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def haversine_km(lat1, lon1, lat2, lon2) -> Optional[float]:
+    """
+    Great-circle distance in kilometres, rounded to one decimal.
+
+    Straight-line, not driving distance: the tile answers "how far out is this
+    place", and a road-network figure would need an external routing API on a
+    read that happens on every open of the housing screen.
+
+    None if any coordinate is missing or unusable, which the caller turns into a
+    tile with no distance line.
+    """
+    lat1, lon1 = _coord(lat1), _coord(lon1)
+    lat2, lon2 = _coord(lat2), _coord(lon2)
+    if None in (lat1, lon1, lat2, lon2):
+        return None
+
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    )
+    return round(2 * C.EARTH_RADIUS_KM * math.asin(math.sqrt(a)), 1)
+
+
+def build_partner_distance(partner: Dict, university: Optional[Dict]) -> Optional[float]:
+    """Kilometres from a partner row to the student's university, or None when
+    either side has no coordinates on file."""
+    if not university:
+        return None
+    return haversine_km(
+        partner.get("latitude"),
+        partner.get("longitude"),
+        university.get("latitude"),
+        university.get("longitude"),
+    )
+
+
 def compute_can_withdraw(status: str) -> bool:
     return status in C.OPEN_STATUSES
+
+
+def compute_switches_remaining(switches_used: int, limit: Optional[int] = None) -> int:
+    """Switches left in the rolling window. Never negative, so a quota lowered
+    below what someone has already spent reads as zero rather than a minus sign
+    on the button."""
+    if limit is None:
+        limit = get_settings().BAITNA_LISTING_SWITCH_LIMIT
+    return max(0, limit - max(0, switches_used))
+
+
+def compute_can_switch_listing(
+    status: str, switches_used: int, limit: Optional[int] = None
+) -> bool:
+    """
+    Whether the switch button is offered.
+
+    Narrower than can_withdraw: a closed lead has no live inquiry to move, and an
+    acknowledged one has a partner already working that unit. baitna_switch_listing
+    rejects both, so advertising the button would be a promise the endpoint breaks.
+    """
+    if status not in C.SWITCH_ELIGIBLE_STATUSES:
+        return False
+    return compute_switches_remaining(switches_used, limit) > 0
 
 
 def compute_can_fallback(status: str, submitted_at, aging_days: Optional[int] = None) -> bool:
@@ -191,18 +273,26 @@ def compute_can_fallback(status: str, submitted_at, aging_days: Optional[int] = 
     return datetime.now(timezone.utc) - submitted >= timedelta(days=days)
 
 
-def build_lead_row(lead: Dict) -> Dict:
-    """Shape one of the student's leads."""
+def build_lead_row(lead: Dict, switches_used: int = 0) -> Dict:
+    """
+    Shape one of the student's leads.
+
+    switches_used is the count for this lead's partner inside the rolling window,
+    supplied by the caller: it is a per-partner figure, not a per-lead one, so it
+    cannot be read off the lead row itself.
+    """
     partner = lead.get("baitna_partners") or {}
     listing = lead.get("baitna_listings") or {}
     status = lead.get("status") or ""
     unit_type = listing.get("unit_type")
+    listing_id = lead.get("listing_id") or listing.get("id")
 
     return LeadRow(
         id=str(lead.get("id")),
         lead_reference=lead.get("lead_reference") or "",
         partner_name=partner.get("name") or "",
         property_name=partner.get("property_name"),
+        listing_id=str(listing_id) if listing_id else None,
         unit_type=unit_type,
         unit_type_label=C.unit_type_label(unit_type) if unit_type else None,
         status=status,
@@ -211,6 +301,8 @@ def build_lead_row(lead: Dict) -> Dict:
         acknowledged_at=_parse_ts(lead.get("acknowledged_at")),
         can_withdraw=compute_can_withdraw(status),
         can_fallback=compute_can_fallback(status, lead.get("submitted_at")),
+        can_switch_listing=compute_can_switch_listing(status, switches_used),
+        switches_remaining=compute_switches_remaining(switches_used),
     ).model_dump()
 
 
@@ -268,13 +360,21 @@ class BaitnaService:
     # ------------------------------------------------------------------
     # Partner tiles
     # ------------------------------------------------------------------
-    def list_partners(self) -> Dict:
+    def list_partners(self, student: Optional[Dict] = None) -> Dict:
+        """
+        The partner tiles.
+
+        `student` is optional so the tiles still build without one; passing the
+        authenticated user adds the "x km away from <university>" line to each
+        tile that has coordinates on file.
+        """
         supabase = _client()
         try:
             res = (
                 supabase.table("baitna_partners")
                 .select(
                     "id, name, property_name, logo_url, price_disclosure_enabled,"
+                    " latitude, longitude,"
                     f" baitna_listings({_LISTING_COLUMNS})"
                 )
                 .eq("is_active", True)
@@ -285,6 +385,9 @@ class BaitnaService:
             logger.error(f"Baitna: failed to list partners: {exc}")
             raise BaitnaError(500, "Could not load housing partners.", C.CODE_INTERNAL)
 
+        # One lookup for the whole page, not one per tile.
+        university = self._student_university(student)
+
         partners: List[Dict] = []
         for row in res.data or []:
             disclosed = bool(row.get("price_disclosure_enabled"))
@@ -293,6 +396,7 @@ class BaitnaService:
                 for listing in (row.get("baitna_listings") or [])
                 if listing.get("is_active")
             ]
+            distance_km = build_partner_distance(row, university)
             partners.append(
                 PartnerTile(
                     id=str(row.get("id")),
@@ -300,11 +404,90 @@ class BaitnaService:
                     property_name=row.get("property_name"),
                     logo_url=row.get("logo_url"),
                     price_disclosure_enabled=disclosed,
+                    distance_km=distance_km,
+                    distance_label=C.format_distance(
+                        distance_km, (university or {}).get("name")
+                    ),
                     listings=listings,
                 ).model_dump()
             )
 
         return {"partners": partners}
+
+    def _student_university(self, student: Optional[Dict]) -> Optional[Dict]:
+        """
+        {"name", "latitude", "longitude"} for the student's university, or None.
+
+        Matched on the domain of their university email first: users.university is
+        free text on the OTP signup path, so only the domain is reliably the
+        institution they actually attend. The name match is the fallback for a
+        profile whose email domain is not on the whitelist.
+
+        Never raises. A tile without a distance line is a small loss; a housing
+        screen that 500s because a lookup table is unreachable is not.
+        """
+        if not student:
+            return None
+
+        email = (student.get("email") or "").strip().lower()
+        domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+        name = (student.get("university") or "").strip()
+        if not domain and not name:
+            return None
+
+        try:
+            supabase = get_supabase_client()
+            if supabase is None:
+                return None
+
+            row = None
+            if domain:
+                # ilike, not eq: university_domains is unique on lower(domain),
+                # so 'HW.ac.uk' and 'hw.ac.uk' are the same row as far as the
+                # table is concerned, and an exact match against the lowercased
+                # email domain would miss one stored with any capitals.
+                res = (
+                    supabase.table("university_domains")
+                    .select("university_name, domain, latitude, longitude")
+                    .ilike("domain", domain)
+                    .eq("is_active", True)
+                    .limit(1)
+                    .execute()
+                )
+                rows = res.data or []
+                # LIKE reads _ as a single-character wildcard, so confirm the
+                # row really is this domain rather than one that merely matches
+                # the pattern.
+                row = next(
+                    (r for r in rows if (r.get("domain") or "").lower() == domain),
+                    None,
+                )
+
+            if row is None and name:
+                res = (
+                    supabase.table("university_domains")
+                    .select("university_name, latitude, longitude")
+                    .ilike("university_name", name)
+                    .eq("is_active", True)
+                    .limit(1)
+                    .execute()
+                )
+                rows = res.data or []
+                row = rows[0] if rows else None
+        except Exception as exc:
+            logger.warning(f"Baitna: university lookup failed: {exc}")
+            return None
+
+        if row is None:
+            # Their university has no row, but they told us its name, so the
+            # label can still read correctly once coordinates exist for it.
+            return {"name": name, "latitude": None, "longitude": None} if name else None
+
+        return {
+            "name": row.get("university_name") or name or None,
+            "latitude": row.get("latitude"),
+            "longitude": row.get("longitude"),
+        }
 
     # ------------------------------------------------------------------
     # Browse feed
@@ -415,6 +598,7 @@ class BaitnaService:
                 supabase.table("baitna_leads")
                 .select(
                     "id, lead_reference, status, submitted_at, acknowledged_at,"
+                    " partner_id, listing_id,"
                     " baitna_partners(name, property_name),"
                     " baitna_listings(unit_type)"
                 )
@@ -426,7 +610,51 @@ class BaitnaService:
             logger.error(f"Baitna: failed to list leads for {student_id}: {exc}")
             raise BaitnaError(500, "Could not load your inquiries.", C.CODE_INTERNAL)
 
-        return {"leads": [build_lead_row(row) for row in (res.data or [])]}
+        # One read for the whole list rather than one per lead. The quota is per
+        # partner, so several leads can share a count.
+        used = self._switch_counts_by_partner(student_id)
+
+        return {
+            "leads": [
+                build_lead_row(row, used.get(str(row.get("partner_id")), 0))
+                for row in (res.data or [])
+            ]
+        }
+
+    def _switch_counts_by_partner(self, student_id: str) -> Dict[str, int]:
+        """
+        Switches spent per partner inside the rolling window.
+
+        Degrades to {} rather than raising: baitna_switch_listing counts the rows
+        itself and is the authority, so the worst a failure here does is offer a
+        button the endpoint then refuses. Failing the whole inquiry list instead
+        would be the larger breakage.
+        """
+        settings = get_settings()
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            days=settings.BAITNA_LISTING_SWITCH_WINDOW_DAYS
+        )
+
+        try:
+            supabase = get_supabase_client()
+            if supabase is None:
+                return {}
+            res = (
+                supabase.table("baitna_lead_listing_switches")
+                .select("partner_id")
+                .eq("student_id", student_id)
+                .gt("switched_at", cutoff.isoformat())
+                .execute()
+            )
+        except Exception as exc:
+            logger.warning(f"Baitna: could not read switch counts for {student_id}: {exc}")
+            return {}
+
+        counts: Dict[str, int] = {}
+        for row in res.data or []:
+            partner_id = str(row.get("partner_id"))
+            counts[partner_id] = counts.get(partner_id, 0) + 1
+        return counts
 
     # ------------------------------------------------------------------
     # Submitting an inquiry
@@ -827,6 +1055,122 @@ class BaitnaService:
         except Exception as exc:
             logger.error(f"Baitna: failed to set lead {lead_id} to {status}: {exc}")
             raise BaitnaError(500, "Could not update this inquiry.", C.CODE_INTERNAL)
+
+    # ------------------------------------------------------------------
+    # Switching the unit on an open inquiry
+    # ------------------------------------------------------------------
+    def switch_listing(self, student_id: str, lead_id: str, listing_id: str) -> Dict:
+        """
+        Move an open inquiry onto a different unit from the same partner.
+
+        Everything happens inside baitna_switch_listing: the quota check, the
+        update and the log row have to be one atomic step, or two taps on the
+        button both pass the check and the student spends one switch twice.
+
+        Consent is not re-taken. consent_events names the partner as the
+        counterparty and the partner is unchanged here, so the record the student
+        already agreed to still covers exactly who receives their details.
+        """
+        # A malformed id would otherwise reach Postgres as a failed cast and 500,
+        # the same guard get_own_lead applies.
+        if not _is_uuid(lead_id):
+            raise BaitnaError(404, "Lead not found.", C.CODE_LEAD_NOT_FOUND)
+        if not _is_uuid(listing_id):
+            raise BaitnaError(
+                404,
+                "That unit is not available from this partner.",
+                C.CODE_LISTING_NOT_FOUND,
+            )
+
+        supabase = _client()
+        params = {
+            "p_student_id": student_id,
+            "p_lead_id": str(lead_id),
+            "p_listing_id": str(listing_id),
+        }
+
+        try:
+            res = supabase.rpc("baitna_switch_listing", params).execute()
+        except Exception as exc:
+            raise self._translate_switch_error(exc)
+
+        result = res.data
+        if isinstance(result, list):
+            result = result[0] if result else None
+        if not result:
+            logger.error("Baitna: baitna_switch_listing returned no row")
+            raise BaitnaError(500, "Could not change your unit.", C.CODE_INTERNAL)
+
+        remaining = result.get("switches_remaining")
+        result["message"] = (
+            f"Your inquiry has been moved to the "
+            f"{C.unit_type_label(result.get('unit_type'))}. "
+            f"You can change it {remaining} more time"
+            f"{'' if remaining == 1 else 's'} with this partner in the next "
+            f"{get_settings().BAITNA_LISTING_SWITCH_WINDOW_DAYS} days."
+        )
+        return result
+
+    @staticmethod
+    def _translate_switch_error(exc: Exception) -> BaitnaError:
+        """Map baitna_switch_listing's SQLSTATEs onto client errors."""
+        sqlstate = _sqlstate_of(exc)
+
+        if sqlstate == C.SQLSTATE_SWITCH_LEAD_NOT_FOUND:
+            # Scoped on student_id inside the function, so another student's lead
+            # reads as missing rather than forbidden — a 403 would confirm it
+            # exists, the same reasoning as get_own_lead.
+            return BaitnaError(404, "Lead not found.", C.CODE_LEAD_NOT_FOUND)
+
+        if sqlstate == C.SQLSTATE_SWITCH_ACKNOWLEDGED:
+            # Distinct from ALREADY_CLOSED: the inquiry is still live and the
+            # student can still withdraw it, so the app must not tell them it is
+            # closed.
+            return BaitnaError(
+                409,
+                "This partner has already responded to your inquiry, so its unit "
+                "can no longer be changed.",
+                C.CODE_ALREADY_ACKNOWLEDGED,
+            )
+
+        if sqlstate == C.SQLSTATE_SWITCH_LEAD_CLOSED:
+            return BaitnaError(
+                409,
+                "This inquiry is closed, so its unit can no longer be changed.",
+                C.CODE_ALREADY_CLOSED,
+            )
+
+        if sqlstate == C.SQLSTATE_SWITCH_LISTING_INVALID:
+            return BaitnaError(
+                404,
+                "That unit is not available from this partner.",
+                C.CODE_LISTING_NOT_FOUND,
+            )
+
+        if sqlstate == C.SQLSTATE_SWITCH_SAME_LISTING:
+            return BaitnaError(
+                409, "That is already the unit on this inquiry.", C.CODE_SAME_LISTING
+            )
+
+        if sqlstate == C.SQLSTATE_SWITCH_LIMIT:
+            # MESSAGE carries the sentence, DETAIL the bare ISO date, the same
+            # split the 30-day floor trigger uses.
+            eligible = _error_detail_of(exc)
+            message = _error_message_of(exc) or (
+                "You have already changed your unit twice with this partner. "
+                "Please try again later."
+            )
+            return BaitnaError(
+                409,
+                message,
+                C.CODE_SWITCH_LIMIT_REACHED,
+                {"eligible_from": eligible} if eligible else None,
+            )
+
+        logger.error(f"Baitna: baitna_switch_listing failed: {exc}", exc_info=True)
+        return BaitnaError(
+            500, "Could not change your unit. Please try again.", C.CODE_INTERNAL
+        )
 
     # ------------------------------------------------------------------
     # Withdrawing consent
