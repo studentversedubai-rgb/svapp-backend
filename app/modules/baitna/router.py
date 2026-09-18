@@ -160,6 +160,73 @@ async def browse_listings(
 
 
 # ================================
+# GET /baitna/listings/{listing_id}
+# ================================
+
+@router.get(
+    "/listings/{listing_id}",
+    dependencies=[Depends(require_baitna_enabled)],
+    summary="One listing by id",
+    description=(
+        "Requires a student JWT. One unit in the same shape a row of "
+        "GET /baitna/listings carries, for a deep link or a recommendation card "
+        "that holds an id and nothing else.\n\n"
+        "Unlike the browse feed this is **not** filtered on availability, so a "
+        "unit that has since filled up comes back with its real "
+        "availability_status rather than a 404. Only is_active bars it.\n\n"
+        "A listing that does not exist, one that is inactive, and one whose "
+        "partner is inactive all answer the same 404 LISTING_NOT_FOUND."
+    ),
+)
+async def get_listing(
+    listing_id: str,
+    current_user: Dict = Depends(get_current_user),
+    service: BaitnaService = Depends(get_baitna_service),
+):
+    try:
+        return baitna_ok(service.get_listing(listing_id))
+    except BaitnaError as exc:
+        return baitna_error(exc.status_code, exc.message, exc.code, exc.data)
+
+
+# ================================
+# GET /baitna/eligibility
+# ================================
+
+@router.get(
+    "/eligibility",
+    dependencies=[Depends(require_baitna_enabled)],
+    summary="Which partners this student can inquire with",
+    description=(
+        "Requires a student JWT. One row per active partner, so the app can say "
+        "'you already have an open inquiry' or 'you can inquire again from the "
+        "12th' before a submit rather than after a 409.\n\n"
+        "Branch on can_inquire; has_open_inquiry and cooldown_until are the two "
+        "reasons behind it, kept separate so the wording can be right. "
+        "cooldown_until is the same date data.eligible_from carries on the 409 "
+        "this predicts.\n\n"
+        "switches_remaining is only actionable while has_open_inquiry is true — "
+        "switching moves an existing inquiry, so on any other row it is a "
+        "forecast of an allowance that cannot currently be spent.\n\n"
+        "can_inquire covers the student-side blocks only. It cannot see a "
+        "partner deactivated after this call, or one with no bookable units, so "
+        "still handle 409 and 404 on submit.\n\n"
+        "Never errors: on a backend problem it reports an empty list rather than "
+        "failing, so treat an empty list as 'unknown, offer the button' — the "
+        "database enforces the real rule on submit either way. Safe to cache for "
+        "the session, but invalidate it after a submit, withdrawal or reroute."
+    ),
+)
+async def get_eligibility(
+    current_user: Dict = Depends(get_current_user),
+    service: BaitnaService = Depends(get_baitna_service),
+):
+    # No try/except: list_partner_eligibility swallows its own failures and
+    # reports an empty list, the same contract GET /baitna/status keeps.
+    return baitna_ok(service.list_partner_eligibility(current_user["id"]))
+
+
+# ================================
 # GET /baitna/leads
 # ================================
 

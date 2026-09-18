@@ -21,6 +21,7 @@ from app.modules.baitna.schemas import (
     LeadCreateRequest,
     ListingFilters,
     ListingRow,
+    PartnerEligibilityRow,
     PartnerTile,
     LeadRow,
 )
@@ -271,6 +272,104 @@ def compute_can_fallback(status: str, submitted_at, aging_days: Optional[int] = 
     if submitted is None:
         return False
     return datetime.now(timezone.utc) - submitted >= timedelta(days=days)
+
+
+def fold_lead_states(rows) -> Dict[str, Dict]:
+    """
+    {partner_id: {"has_open": bool, "last_closed_at": datetime|None}} from raw
+    baitna_leads rows.
+
+    The one place the "does this student have a live or recently-closed lead with
+    this partner" rule is expressed. Both the reroute path and the eligibility
+    endpoint fold the same rows this way and then apply their own comparison and
+    their own failure policy, which is what differs between them.
+
+    last_closed_at is the max across the partner's rows, matching the
+    baitna_leads_enforce_floor trigger's max(closed_at). The reroute path only
+    needs a boolean, for which max and any agree, but a date does not: a student
+    with two closed leads would otherwise be quoted the earlier one.
+    """
+    states: Dict[str, Dict] = {}
+    for row in rows or []:
+        partner_id = str(row.get("partner_id"))
+        state = states.setdefault(
+            partner_id, {"has_open": False, "last_closed_at": None}
+        )
+
+        if row.get("status") in C.OPEN_STATUSES:
+            state["has_open"] = True
+
+        # Read regardless of status. An open row carries no closed_at, so this is
+        # a no-op for it, and the caller that cares about open-ness has already
+        # been told by the flag above.
+        closed_at = _parse_ts(row.get("closed_at"))
+        if closed_at is not None:
+            current = state["last_closed_at"]
+            if current is None or closed_at > current:
+                state["last_closed_at"] = closed_at
+
+    return states
+
+
+def compute_cooldown_until(
+    last_closed_at,
+    cooldown_days: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> Optional[date]:
+    """
+    The day new inquiries to a partner reopen, or None when nothing blocks one.
+
+    Mirrors baitna_leads_enforce_floor, which raises BT002 while
+    max(closed_at) > now() - interval '30 days' and reports
+    (max(closed_at) + interval '30 days')::date. Both halves matter:
+
+    - The window test is strict, so exactly the interval elapsed is not blocked
+      and this returns None for it.
+    - The trigger's ::date resolves in the database session timezone. We resolve
+      in UTC, which is what Supabase sessions use and what _blocked_partner_ids
+      already compares in. A session moved to another zone would disagree by a
+      day for anything closed near midnight. TestCooldownDateAgreesWithTheTrigger
+      pins the arithmetic and the strict window against the migration; it does
+      not pin the timezone, which is the one way these two can still drift.
+    """
+    closed_at = _parse_ts(last_closed_at)
+    if closed_at is None:
+        return None
+
+    days = (
+        cooldown_days
+        if cooldown_days is not None
+        else get_settings().BAITNA_LEAD_COOLDOWN_DAYS
+    )
+    moment = now or datetime.now(timezone.utc)
+
+    if closed_at <= moment - timedelta(days=days):
+        return None
+    return (closed_at + timedelta(days=days)).date()
+
+
+def compute_can_inquire(has_open: bool, cooldown_until: Optional[date]) -> bool:
+    """
+    Whether a new inquiry to this partner would be accepted today.
+
+    The two student-side blocks only: BT001's open inquiry and BT002's floor.
+    Deliberately not influenced by switches_remaining, which governs moving an
+    existing inquiry and has nothing to say about opening one.
+    """
+    return not has_open and cooldown_until is None
+
+
+def build_eligibility_row(partner_id: str, state: Dict, switches_used: int) -> Dict:
+    """One partner's eligibility row."""
+    cooldown_until = compute_cooldown_until(state.get("last_closed_at"))
+    has_open = bool(state.get("has_open"))
+    return PartnerEligibilityRow(
+        partner_id=str(partner_id),
+        has_open_inquiry=has_open,
+        cooldown_until=cooldown_until,
+        switches_remaining=compute_switches_remaining(switches_used),
+        can_inquire=compute_can_inquire(has_open, cooldown_until),
+    ).model_dump()
 
 
 def build_lead_row(lead: Dict, switches_used: int = 0) -> Dict:
@@ -589,6 +688,71 @@ class BaitnaService:
             return query
 
     # ------------------------------------------------------------------
+    # One listing
+    # ------------------------------------------------------------------
+    def get_listing(self, listing_id: str) -> Dict:
+        """
+        One unit by id, in the same shape browse returns.
+
+        Reached from a deep link or a recommendation card, where the caller holds
+        an id and nothing else. Missing, inactive, and belonging to an inactive
+        partner all answer the same 404 out of the same empty result, so the
+        response cannot be used to work out which partners exist but are switched
+        off.
+
+        Deliberately not filtered on availability_status. A card opened after the
+        unit filled up should show its real availability rather than vanish; the
+        browse feed's default filter is a browsing convenience, not a bar on
+        looking at a unit. is_active is the only bar, which is what
+        baitna_switch_listing asks of a target unit too.
+
+        Both halves of the partner filter carry weight. partner_id is NOT NULL
+        REFERENCES baitna_partners(id), so the embed always resolves and the !inner
+        in _PARTNER_EMBED drops nothing on its own; the eq() below supplies the
+        predicate, and !inner is what turns it from "null out the embed" into
+        "drop the row". With a plain embed an inactive partner's unit would come
+        back as a 200 carrying an empty partner name.
+        """
+        # A malformed id would otherwise reach Postgres as a failed cast and 500,
+        # the same guard switch_listing applies.
+        if not _is_uuid(listing_id):
+            raise BaitnaError(404, "Listing not found.", C.CODE_LISTING_NOT_FOUND)
+
+        supabase = _client()
+
+        try:
+            # limit(1) rather than single(): single() answers zero rows with a
+            # PostgREST error, which would arrive here as an exception and make
+            # "no such listing" indistinguishable from "the database is down".
+            res = (
+                supabase.table("baitna_listings")
+                .select(f"{_LISTING_COLUMNS}, {_PARTNER_EMBED}")
+                .eq("id", str(listing_id))
+                .eq("is_active", True)
+                .eq("baitna_partners.is_active", True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            logger.error(f"Baitna: listing lookup failed for {listing_id}: {exc}")
+            raise BaitnaError(500, "Could not load this listing.", C.CODE_INTERNAL)
+
+        rows = res.data or []
+        if not rows:
+            raise BaitnaError(404, "Listing not found.", C.CODE_LISTING_NOT_FOUND)
+
+        # Unreachable while _PARTNER_EMBED keeps its !inner, and that is the point:
+        # it is the tripwire if the embed is ever loosened to a plain one.
+        partner = rows[0].get("baitna_partners") or {}
+        if not partner:
+            logger.error(
+                f"Baitna: listing {listing_id} came back with no partner embedded"
+            )
+            raise BaitnaError(404, "Listing not found.", C.CODE_LISTING_NOT_FOUND)
+
+        return {"listing": build_browse_row(rows[0], partner)}
+
+    # ------------------------------------------------------------------
     # The student's own leads
     # ------------------------------------------------------------------
     def list_student_leads(self, student_id: str) -> Dict:
@@ -655,6 +819,86 @@ class BaitnaService:
             partner_id = str(row.get("partner_id"))
             counts[partner_id] = counts.get(partner_id, 0) + 1
         return counts
+
+    # ------------------------------------------------------------------
+    # Who this student can inquire with
+    # ------------------------------------------------------------------
+    def list_partner_eligibility(self, student_id: str) -> Dict:
+        """
+        One row per active partner, so a caller can warn before a submit rather
+        than explain a 409 afterwards.
+
+        Never raises. The database enforces the real rule on submit — BT001 and
+        BT002 are the authority and this only describes them — so an unreadable
+        answer degrades to an empty list. That reads as "I don't know", and the
+        caller falls back to offering the button. Reporting can_inquire: true for
+        every partner instead would be a positive claim indistinguishable from a
+        verified one, which is the failure this endpoint exists to prevent.
+
+        student_id is supplied by the caller from the JWT. The route takes no
+        student parameter of any kind, and must never grow one: that is the only
+        thing keeping one student from reading another's inquiry state.
+        """
+        try:
+            supabase = get_supabase_client()
+            if supabase is None:
+                logger.warning("Baitna: eligibility asked for with no Supabase client")
+                return {"eligibility": []}
+
+            try:
+                partners_res = (
+                    supabase.table("baitna_partners")
+                    .select("id")
+                    .eq("is_active", True)
+                    .order("created_at")
+                    .execute()
+                )
+            except Exception as exc:
+                logger.error(f"Baitna: eligibility partner read failed: {exc}")
+                return {"eligibility": []}
+
+            partner_ids = [str(row.get("id")) for row in (partners_res.data or [])]
+            if not partner_ids:
+                return {"eligibility": []}
+
+            try:
+                leads_res = (
+                    supabase.table("baitna_leads")
+                    .select("partner_id, status, closed_at")
+                    .eq("student_id", student_id)
+                    .execute()
+                )
+            except Exception as exc:
+                # The two fields this endpoint is for. Without them there is
+                # nothing honest to return, so the list goes empty rather than
+                # optimistic.
+                logger.error(f"Baitna: eligibility lead read failed: {exc}")
+                return {"eligibility": []}
+
+            states = fold_lead_states(leads_res.data or [])
+
+            # Already degrades to {} on its own failure, which leaves every row
+            # reporting the full allowance. That number gates no server decision
+            # — baitna_switch_listing counts the rows itself — so it is not worth
+            # failing the list over.
+            used = self._switch_counts_by_partner(student_id)
+
+            return {
+                "eligibility": [
+                    build_eligibility_row(
+                        partner_id,
+                        states.get(partner_id, {}),
+                        used.get(partner_id, 0),
+                    )
+                    for partner_id in partner_ids
+                ]
+            }
+
+        except Exception as exc:
+            # Belt and braces over the per-read guards above, so "never raises"
+            # holds against something unexpected in the fold as well.
+            logger.error(f"Baitna: eligibility failed for {student_id}: {exc}")
+            return {"eligibility": []}
 
     # ------------------------------------------------------------------
     # Submitting an inquiry
@@ -992,16 +1236,18 @@ class BaitnaService:
             logger.error(f"Baitna: could not read student leads for blocking: {exc}")
             raise BaitnaError(500, "Could not find another partner.", C.CODE_INTERNAL)
 
-        blocked = set()
-        for row in res.data or []:
-            partner_id = str(row.get("partner_id"))
-            if row.get("status") in C.OPEN_STATUSES:
-                blocked.add(partner_id)
-                continue
-            closed_at = _parse_ts(row.get("closed_at"))
-            if closed_at is not None and closed_at > cutoff:
-                blocked.add(partner_id)
-        return blocked
+        # Compared as timestamps, not as the calendar date compute_cooldown_until
+        # returns: truncating to a day would move this boundary by up to 24 hours
+        # and offer a partner the insert then rejects with BT002.
+        return {
+            partner_id
+            for partner_id, state in fold_lead_states(res.data or []).items()
+            if state["has_open"]
+            or (
+                state["last_closed_at"] is not None
+                and state["last_closed_at"] > cutoff
+            )
+        }
 
     def _get_consent_event(self, consent_event_id: Optional[str]) -> Dict:
         """

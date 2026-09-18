@@ -276,3 +276,31 @@ class LeadRow(BaseModel):
     # app shows the student before they spend one.
     can_switch_listing: bool = False
     switches_remaining: int = 0
+
+
+class PartnerEligibilityRow(BaseModel):
+    """
+    Whether this student may open an inquiry with one partner, answered before
+    they try rather than as a 409 afterwards.
+
+    can_inquire is the flag to branch on; has_open_inquiry and cooldown_until are
+    kept separate so the caller can word the reason properly. can_inquire covers
+    the student-side blocks only — it cannot see a partner deactivated after this
+    call, nor a partner with no bookable units — so a submit must still handle
+    409 and 404.
+    """
+
+    partner_id: str
+    has_open_inquiry: bool = False
+
+    # The day the 30-day floor lifts. A real date, so jsonable_encoder renders it
+    # YYYY-MM-DD, matching data.eligible_from on the 409 this endpoint predicts.
+    cooldown_until: Optional[date] = None
+
+    # Only actionable while has_open_inquiry is true: switching moves an existing
+    # inquiry, so on any other row this is a forecast of an allowance that cannot
+    # currently be spent. It can read below the limit with no open inquiry, since
+    # switch rows outlive the lead that spent them.
+    switches_remaining: int = 0
+
+    can_inquire: bool = True

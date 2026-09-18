@@ -11,7 +11,7 @@ migrations/versions/20260904_add_baitna.sql.
 """
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import get_args
 
@@ -19,6 +19,7 @@ import pytest
 from httpx import QueryParams
 from pydantic import ValidationError
 
+from app.core.config import Settings
 from app.modules.baitna import constants as C
 from app.modules.baitna.emails import student_greeting
 from app.modules.baitna.schemas import (
@@ -39,9 +40,12 @@ from app.modules.baitna.service import (
     build_listing_row,
     build_partner_distance,
     compute_can_fallback,
+    compute_can_inquire,
     compute_can_switch_listing,
     compute_can_withdraw,
+    compute_cooldown_until,
     compute_switches_remaining,
+    fold_lead_states,
     haversine_km,
 )
 
@@ -165,6 +169,38 @@ class FakeSupabase:
     def table(self, name):
         self.requested_tables.append(name)
         return self.query
+
+
+class FakeSupabaseByTable:
+    """
+    FakeSupabase hands the same query back for every table, which is fine for a
+    method that reads one. Eligibility reads three, and each needs its own rows,
+    so this dispatches on the table name.
+
+    A table with no query registered raises rather than returning an empty one:
+    a read nobody planned for is a test that has drifted from the code, not a
+    read that should quietly return nothing.
+    """
+
+    def __init__(self, queries, failing=()):
+        self.queries = queries
+        self.failing = set(failing)
+        self.requested_tables = []
+
+    def table(self, name):
+        self.requested_tables.append(name)
+        if name in self.failing:
+            return _ExplodingQuery()
+        if name not in self.queries:
+            raise AssertionError(f"unexpected table read: {name}")
+        return self.queries[name]
+
+
+class _ExplodingQuery(FakeQuery):
+    """A table whose read fails at execute(), for the degradation paths."""
+
+    def execute(self):
+        raise RuntimeError("postgrest is down")
 
 
 class StubFilters:
@@ -2212,3 +2248,424 @@ class TestSwitchSqlAgrees:
         sql = self.sql()
         assert "AND u.latitude IS NULL" in sql
         assert "AND u.longitude IS NULL" in sql
+
+
+# ================================
+# GET /baitna/listings/{listing_id}
+# ================================
+
+class TestGetListing:
+    """
+    One unit by id. The three ways a listing can be unreachable all have to be
+    indistinguishable, or the endpoint becomes a probe for which partners exist
+    but are switched off.
+    """
+
+    LISTING_ID = "11111111-1111-4111-8111-111111111111"
+
+    def _run(self, service, monkeypatch, rows, listing_id=None):
+        query = FakeQuery(rows=rows)
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client",
+            lambda: FakeSupabase(query),
+        )
+        return query, service.get_listing(listing_id or self.LISTING_ID)
+
+    def _row(self, **partner_overrides):
+        row = _listing(id=self.LISTING_ID)
+        partner = {
+            "id": "partner-1",
+            "name": "Azizi Developments",
+            "property_name": "Azizi Riviera",
+            "logo_url": "https://example.com/logo.png",
+            "price_disclosure_enabled": True,
+            "is_active": True,
+        }
+        partner.update(partner_overrides)
+        row["baitna_partners"] = partner
+        return row
+
+    def test_only_active_listings_and_partners_are_queried(self, service, monkeypatch):
+        query, _ = self._run(service, monkeypatch, [self._row()])
+        assert query.has_filter("eq", "is_active", True)
+        # Both halves matter: the predicate here, and the !inner in _PARTNER_EMBED
+        # that turns it into a dropped row rather than a nulled embed.
+        assert query.has_filter("eq", "baitna_partners.is_active", True)
+
+    def test_availability_is_not_filtered(self, service, monkeypatch):
+        """A card opened after the unit filled up shows real availability."""
+        query, _ = self._run(service, monkeypatch, [self._row()])
+        assert query.filters("in_") == []
+
+    def test_returns_the_browse_row_shape(self, service, monkeypatch):
+        _, result = self._run(service, monkeypatch, [self._row()])
+        listing = result["listing"]
+        assert listing["partner_id"] == "partner-1"
+        assert listing["partner_name"] == "Azizi Developments"
+        assert listing["property_name"] == "Azizi Riviera"
+        assert listing["logo_url"] == "https://example.com/logo.png"
+        assert listing["price_amount"] == 3500
+
+    def test_unavailable_but_active_listing_is_returned(self, service, monkeypatch):
+        row = self._row()
+        row["availability_status"] = "unavailable"
+        _, result = self._run(service, monkeypatch, [row])
+        assert result["listing"]["availability_status"] == "unavailable"
+        assert result["listing"]["availability_label"] == "Unavailable"
+
+    def test_price_hiding_partner_reports_confirmed_on_inquiry(self, service, monkeypatch):
+        _, result = self._run(
+            service, monkeypatch, [self._row(price_disclosure_enabled=False)]
+        )
+        assert result["listing"]["price_amount"] is None
+        assert result["listing"]["price_display"] == C.PRICE_HIDDEN_DISPLAY
+
+    def test_missing_listing_is_404(self, service, monkeypatch):
+        with pytest.raises(BaitnaError) as excinfo:
+            self._run(service, monkeypatch, [])
+        assert excinfo.value.status_code == 404
+        assert excinfo.value.code == C.CODE_LISTING_NOT_FOUND
+
+    def test_the_404_message_says_nothing_about_why(self, service, monkeypatch):
+        """
+        Inactive listings and inactive partners are both filtered out server-side,
+        so all three causes arrive here as one empty result. The message has to
+        stay incurious about which, or it becomes a probe for partners that exist
+        but are switched off.
+        """
+        with pytest.raises(BaitnaError) as excinfo:
+            self._run(service, monkeypatch, [])
+        message = excinfo.value.message.lower()
+        assert message == "listing not found."
+        for leak in ("inactive", "partner", "no longer", "unavailable", "disabled"):
+            assert leak not in message, leak
+
+    def test_malformed_id_is_404_not_500(self, service, monkeypatch):
+        """A bad id would otherwise reach Postgres as a failed cast."""
+        with pytest.raises(BaitnaError) as excinfo:
+            self._run(service, monkeypatch, [self._row()], listing_id="not-a-uuid")
+        assert excinfo.value.status_code == 404
+        assert excinfo.value.code == C.CODE_LISTING_NOT_FOUND
+
+    def test_read_failure_is_500(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client",
+            lambda: FakeSupabase(_ExplodingQuery()),
+        )
+        with pytest.raises(BaitnaError) as excinfo:
+            service.get_listing(self.LISTING_ID)
+        assert excinfo.value.status_code == 500
+        assert excinfo.value.code == C.CODE_INTERNAL
+
+    def test_missing_partner_embed_is_404_not_a_blank_partner_name(
+        self, service, monkeypatch
+    ):
+        """The tripwire if _PARTNER_EMBED ever loses its !inner."""
+        row = _listing(id=self.LISTING_ID)
+        row["baitna_partners"] = None
+        with pytest.raises(BaitnaError) as excinfo:
+            self._run(service, monkeypatch, [row])
+        assert excinfo.value.status_code == 404
+        assert excinfo.value.code == C.CODE_LISTING_NOT_FOUND
+
+
+# ================================
+# The lead-state fold and the cooldown date
+# ================================
+
+class TestFoldLeadStates:
+    """
+    The shared rule behind both _blocked_partner_ids and the eligibility
+    endpoint. The equivalence asserted here is what lets the reroute path be
+    expressed in terms of it.
+    """
+
+    def test_open_lead_sets_has_open(self):
+        states = fold_lead_states(
+            [{"partner_id": "p1", "status": "posted_to_dashboard", "closed_at": None}]
+        )
+        assert states["p1"]["has_open"] is True
+        assert states["p1"]["last_closed_at"] is None
+
+    def test_last_closed_at_is_the_max_not_the_first_seen(self):
+        older = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        newer = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        states = fold_lead_states(
+            [
+                {"partner_id": "p1", "status": "withdrawn", "closed_at": newer.isoformat()},
+                {"partner_id": "p1", "status": "closed_no_match", "closed_at": older.isoformat()},
+            ]
+        )
+        assert states["p1"]["last_closed_at"] == newer
+
+    def test_unparseable_closed_at_is_ignored(self):
+        states = fold_lead_states(
+            [{"partner_id": "p1", "status": "withdrawn", "closed_at": "not-a-date"}]
+        )
+        assert states["p1"]["last_closed_at"] is None
+
+    def test_partners_are_kept_apart(self):
+        states = fold_lead_states(
+            [
+                {"partner_id": "p1", "status": "acknowledged", "closed_at": None},
+                {"partner_id": "p2", "status": "withdrawn", "closed_at": None},
+            ]
+        )
+        assert states["p1"]["has_open"] is True
+        assert states["p2"]["has_open"] is False
+
+
+class TestCooldownUntil:
+    def test_recently_closed_reports_the_day_the_floor_lifts(self):
+        closed = datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc)
+        now = closed + timedelta(days=3)
+        assert compute_cooldown_until(closed, cooldown_days=30, now=now) == date(2026, 10, 4)
+
+    def test_long_closed_reports_nothing(self):
+        closed = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        now = closed + timedelta(days=60)
+        assert compute_cooldown_until(closed, cooldown_days=30, now=now) is None
+
+    def test_exactly_the_window_elapsed_is_not_blocked(self):
+        """The trigger's window test is a strict >, so the boundary day is clear."""
+        closed = datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc)
+        now = closed + timedelta(days=30)
+        assert compute_cooldown_until(closed, cooldown_days=30, now=now) is None
+
+    def test_never_closed_reports_nothing(self):
+        assert compute_cooldown_until(None) is None
+
+    def test_can_inquire_needs_both_blocks_clear(self):
+        assert compute_can_inquire(False, None) is True
+        assert compute_can_inquire(True, None) is False
+        assert compute_can_inquire(False, date(2026, 10, 4)) is False
+
+
+# ================================
+# GET /baitna/eligibility
+# ================================
+
+def _cooldown_days():
+    return Settings().BAITNA_LEAD_COOLDOWN_DAYS
+
+
+def _switch_limit():
+    return Settings().BAITNA_LISTING_SWITCH_LIMIT
+
+
+class TestEligibility:
+    """
+    Describes BT001 and BT002 ahead of a submit. It must never raise: the
+    database is the authority, so an unreadable answer is an empty list.
+    """
+
+    def _wire(self, monkeypatch, partners, leads, switches=None, failing=()):
+        queries = {
+            "baitna_partners": FakeQuery(rows=partners),
+            "baitna_leads": FakeQuery(rows=leads),
+            "baitna_lead_listing_switches": FakeQuery(rows=switches or []),
+        }
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client",
+            lambda: FakeSupabaseByTable(queries, failing=failing),
+        )
+        return queries
+
+    def _lead(self, partner_id="p1", status="withdrawn", closed_at=None):
+        return {"partner_id": partner_id, "status": status, "closed_at": closed_at}
+
+    def test_open_inquiry_blocks_the_partner(self, service, monkeypatch):
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}],
+            leads=[self._lead(status="posted_to_dashboard")],
+        )
+        row = service.list_partner_eligibility("student-1")["eligibility"][0]
+        assert row["has_open_inquiry"] is True
+        assert row["can_inquire"] is False
+        assert row["cooldown_until"] is None
+
+    def test_recently_closed_lead_reports_the_date(self, service, monkeypatch):
+        closed = datetime.now(timezone.utc) - timedelta(days=3)
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}],
+            leads=[self._lead(closed_at=closed.isoformat())],
+        )
+        row = service.list_partner_eligibility("student-1")["eligibility"][0]
+        assert row["has_open_inquiry"] is False
+        assert row["can_inquire"] is False
+        assert row["cooldown_until"] == (closed + timedelta(days=_cooldown_days())).date()
+
+    def test_two_closed_leads_report_the_later_date(self, service, monkeypatch):
+        """max(closed_at), matching the trigger — not whichever row came first."""
+        older = datetime.now(timezone.utc) - timedelta(days=20)
+        newer = datetime.now(timezone.utc) - timedelta(days=2)
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}],
+            leads=[
+                self._lead(closed_at=older.isoformat()),
+                self._lead(status="closed_no_match", closed_at=newer.isoformat()),
+            ],
+        )
+        row = service.list_partner_eligibility("student-1")["eligibility"][0]
+        assert row["cooldown_until"] == (newer + timedelta(days=_cooldown_days())).date()
+
+    def test_long_closed_lead_does_not_block(self, service, monkeypatch):
+        closed = datetime.now(timezone.utc) - timedelta(days=60)
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}],
+            leads=[self._lead(closed_at=closed.isoformat())],
+        )
+        row = service.list_partner_eligibility("student-1")["eligibility"][0]
+        assert row["can_inquire"] is True
+        assert row["cooldown_until"] is None
+
+    def test_partner_with_no_relationship_is_open_with_the_full_allowance(
+        self, service, monkeypatch
+    ):
+        """Never 0 — that is the value that means 'limit reached'."""
+        self._wire(monkeypatch, partners=[{"id": "p1"}], leads=[])
+        row = service.list_partner_eligibility("student-1")["eligibility"][0]
+        assert row["can_inquire"] is True
+        assert row["has_open_inquiry"] is False
+        assert row["switches_remaining"] == _switch_limit()
+
+    def test_every_active_partner_gets_a_row(self, service, monkeypatch):
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}, {"id": "p2"}, {"id": "p3"}],
+            leads=[self._lead(partner_id="p2", status="acknowledged")],
+        )
+        rows = service.list_partner_eligibility("student-1")["eligibility"]
+        assert [r["partner_id"] for r in rows] == ["p1", "p2", "p3"]
+        assert [r["can_inquire"] for r in rows] == [True, False, True]
+
+    def test_only_active_partners_are_asked_for(self, service, monkeypatch):
+        queries = self._wire(monkeypatch, partners=[{"id": "p1"}], leads=[])
+        service.list_partner_eligibility("student-1")
+        assert queries["baitna_partners"].has_filter("eq", "is_active", True)
+
+    def test_scoped_to_the_calling_student(self, service, monkeypatch):
+        queries = self._wire(monkeypatch, partners=[{"id": "p1"}], leads=[])
+        service.list_partner_eligibility("student-1")
+        assert queries["baitna_leads"].has_filter("eq", "student_id", "student-1")
+
+    def test_switch_allowance_counts_against_the_partner(self, service, monkeypatch):
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}],
+            leads=[self._lead(status="posted_to_dashboard")],
+            switches=[{"partner_id": "p1"}],
+        )
+        row = service.list_partner_eligibility("student-1")["eligibility"][0]
+        assert row["switches_remaining"] == _switch_limit() - 1
+
+    def test_switches_spent_do_not_close_off_inquiring(self, service, monkeypatch):
+        """Different rules: the quota governs moving an inquiry, not opening one."""
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}],
+            leads=[],
+            switches=[{"partner_id": "p1"}] * 10,
+        )
+        row = service.list_partner_eligibility("student-1")["eligibility"][0]
+        assert row["switches_remaining"] == 0
+        assert row["can_inquire"] is True
+
+    def test_lead_read_failure_degrades_to_an_empty_list(self, service, monkeypatch):
+        """
+        Not optimistic rows: can_inquire true is a positive claim, and on the
+        wire it would be indistinguishable from a verified one.
+        """
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}],
+            leads=[],
+            failing=("baitna_leads",),
+        )
+        assert service.list_partner_eligibility("student-1") == {"eligibility": []}
+
+    def test_partner_read_failure_degrades_to_an_empty_list(self, service, monkeypatch):
+        self._wire(
+            monkeypatch, partners=[], leads=[], failing=("baitna_partners",)
+        )
+        assert service.list_partner_eligibility("student-1") == {"eligibility": []}
+
+    def test_switch_read_failure_leaves_the_list_standing(self, service, monkeypatch):
+        """
+        The count gates no server decision — baitna_switch_listing counts the
+        rows itself — so it is not worth failing the whole list over.
+        """
+        self._wire(
+            monkeypatch,
+            partners=[{"id": "p1"}],
+            leads=[self._lead(status="posted_to_dashboard")],
+            failing=("baitna_lead_listing_switches",),
+        )
+        rows = service.list_partner_eligibility("student-1")["eligibility"]
+        assert len(rows) == 1
+        assert rows[0]["has_open_inquiry"] is True
+        assert rows[0]["switches_remaining"] == _switch_limit()
+
+    def test_no_client_degrades_to_an_empty_list(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "app.modules.baitna.service.get_supabase_client", lambda: None
+        )
+        assert service.list_partner_eligibility("student-1") == {"eligibility": []}
+
+    def test_no_active_partners_is_an_empty_list_not_an_error(self, service, monkeypatch):
+        self._wire(monkeypatch, partners=[], leads=[])
+        assert service.list_partner_eligibility("student-1") == {"eligibility": []}
+
+    def test_the_route_takes_no_student_parameter(self):
+        """
+        The only thing keeping one student from reading another's inquiry state
+        is that the route has nowhere to put someone else's id.
+        """
+        import inspect
+
+        from app.modules.baitna.router import get_eligibility
+
+        assert set(inspect.signature(get_eligibility).parameters) == {
+            "current_user",
+            "service",
+        }
+
+
+class TestCooldownDateAgreesWithTheTrigger:
+    """
+    test_cooldown_setting_matches_the_trigger pins the interval length. This pins
+    the arithmetic: compute_cooldown_until now reports a date the trigger also
+    computes, and the two are read on the same screen — /eligibility before the
+    submit, data.eligible_from on the 409 after it.
+    """
+
+    def test_the_trigger_reports_max_closed_at_plus_the_interval_as_a_date(self):
+        sql = TestEnumsAgree.MIGRATION.read_text(encoding="utf-8")
+        assert re.search(
+            r"\(\s*v_last_closed\s*\+\s*interval\s*'30 days'\s*\)\s*::date", sql
+        ), "the floor trigger no longer reports (closed_at + interval)::date"
+        assert re.search(
+            r"SELECT\s+max\(closed_at\)\s+INTO\s+v_last_closed", sql, re.IGNORECASE
+        ), "the floor trigger no longer takes max(closed_at)"
+
+    def test_python_computes_the_same_day(self):
+        closed = datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc)
+        now = closed + timedelta(days=1)
+        assert compute_cooldown_until(closed, cooldown_days=30, now=now) == (
+            closed + timedelta(days=30)
+        ).date()
+
+    def test_the_window_is_strict_in_both(self):
+        """`v_last_closed > now() - interval '30 days'` — strict, so day 30 is clear."""
+        sql = TestEnumsAgree.MIGRATION.read_text(encoding="utf-8")
+        assert re.search(
+            r"v_last_closed\s*>\s*now\(\)\s*-\s*interval\s*'30 days'", sql
+        )
+        closed = datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc)
+        assert compute_cooldown_until(
+            closed, cooldown_days=30, now=closed + timedelta(days=30)
+        ) is None

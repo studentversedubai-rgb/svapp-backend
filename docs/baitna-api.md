@@ -98,6 +98,13 @@ Two server rules can reject the submission, and both need a real UI path:
 Both limits are **per partner**. A student can hold inquiries with several
 different partners at the same time.
 
+You can find out about both *before* the student fills anything in:
+`GET /baitna/eligibility` reports `can_inquire` per partner, with the cooldown
+date when there is one. Use it to label or disable a partner up front rather than
+letting them write a form and then rejecting it. It doesn't replace the two codes
+above — a partner can go inactive between the two calls — so keep the handling
+here either way.
+
 ## Step 4: the inquiry lifecycle
 
 This is what drives My Inquiries. The table is intuition only; **always read the
@@ -243,6 +250,77 @@ Listings from partners who hide prices are **excluded from `price_min`/`price_ma
 filters** and always sort last under `sort=price`. That's deliberate: it stops a
 hidden price being narrowed down. Don't treat their absence from a price filter as
 a bug.
+
+---
+
+## `GET /baitna/listings/{listing_id}`
+
+One unit, in the same shape a row of the browse feed carries. For any screen that
+arrives holding only an id — a deep link, a saved unit, a recommendation card —
+rather than having paged the feed to find it.
+
+```jsonc
+{ "listing": { /* Listing + partner_id, partner_name, property_name, logo_url */ } }
+```
+
+**This is not filtered on availability, and the feed is.** A unit that has since
+filled up comes back with `availability_status: "unavailable"` and a 200, so a
+card saved yesterday still opens and explains itself. `is_active` is the only bar.
+That also means this is the only way to reach a `waitlist` unit by id, since the
+feed's default filter leaves those out.
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `LISTING_NOT_FOUND` | 404 | No such unit, it's been retired, or its partner is no longer active |
+
+**All three causes answer identically, on purpose.** Don't try to tell them apart
+or word them differently — a distinguishable message would let the endpoint be
+used to find out which partners exist but are switched off. Treat any 404 here as
+"this unit is gone" and send the student back to browse.
+
+---
+
+## `GET /baitna/eligibility`
+
+Which partners this student can open an inquiry with — *before* they fill in the
+form, rather than as a 409 afterwards. One row per active partner.
+
+```jsonc
+{ "eligibility": [{
+  "partner_id": "uuid",
+  "has_open_inquiry": true,
+  "cooldown_until": null,        // ISO date, null when nothing blocks them
+  "switches_remaining": 2,
+  "can_inquire": false
+}]}
+```
+
+**Branch on `can_inquire`.** `has_open_inquiry` and `cooldown_until` are the two
+reasons behind it, kept separate so you can word it properly: "you already have a
+live inquiry with them" reads nothing like "you can inquire again from the 4th".
+`cooldown_until` is the same date `data.eligible_from` carries on the
+`COOLDOWN_ACTIVE` 409 this predicts.
+
+**`can_inquire` means "no student-side block", not "this will succeed".** It can't
+see a partner deactivated a second later, and it says nothing about whether that
+partner currently has any bookable units. Keep handling `OPEN_INQUIRY_EXISTS`,
+`COOLDOWN_ACTIVE` and `PARTNER_NOT_FOUND` on submit — this endpoint saves the
+student a wasted form, it doesn't replace the error paths.
+
+**`switches_remaining` is only actionable when `has_open_inquiry` is true.**
+Switching moves an existing inquiry, so on any other row it's a forecast of an
+allowance that can't be spent yet — and since the window rolls, not necessarily
+the number they'll have when they do inquire. Don't render it on a partner they
+have no inquiry with. It can also read below the limit with no open inquiry,
+because switch records outlive the lead that spent them.
+
+**Never errors.** On any backend problem it returns an empty list rather than
+failing. An empty list means *"unknown — offer the button"*, not *"nothing is
+available"*: the database enforces the real rule on submit either way, so the
+worst case is the warning you couldn't show. Don't block the flow on it.
+
+Safe to cache for the session, but invalidate after a submit, a withdrawal or a
+reroute, since all three change it.
 
 ---
 
