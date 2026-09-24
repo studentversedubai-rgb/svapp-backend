@@ -261,9 +261,12 @@ class MerchantService:
         """
         # Get token data from Redis
         session_merchant_id = await self._get_session_merchant(session_token)
-        redis_key = f"{REDIS_PREFIX_QR_TOKEN}{code}"
+        if len(code) <= 6:
+            redis_key = f"{REDIS_PREFIX_BACKUP_CODE}{code.upper()}"
+        else:
+            redis_key = f"{REDIS_PREFIX_QR_TOKEN}{code}"
+
         token_data_str = self.redis.get(redis_key)
-        
         if not token_data_str:
             raise ValueError("Invalid or expired token")
         

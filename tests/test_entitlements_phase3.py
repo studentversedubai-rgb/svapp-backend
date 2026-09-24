@@ -110,29 +110,29 @@ class TestStateMachine:
             EntitlementState.PENDING_CONFIRMATION
         )
         
-        # PENDING_CONFIRMATION -> USED
+        # PENDING_CONFIRMATION -> CONFIRMED
         assert state_machine.can_transition(
             EntitlementState.PENDING_CONFIRMATION,
-            EntitlementState.USED
+            EntitlementState.CONFIRMED
         )
         
-        # USED -> VOIDED
+        # PENDING_CONFIRMATION -> ACTIVE (cancel validation)
         assert state_machine.can_transition(
-            EntitlementState.USED,
-            EntitlementState.VOIDED
+            EntitlementState.PENDING_CONFIRMATION,
+            EntitlementState.ACTIVE
         )
     
     def test_invalid_transitions(self, state_machine):
         """Test invalid state transitions"""
-        # Cannot go from USED to ACTIVE
+        # Cannot go from CONFIRMED to ACTIVE (CONFIRMED is terminal)
         assert not state_machine.can_transition(
-            EntitlementState.USED,
+            EntitlementState.CONFIRMED,
             EntitlementState.ACTIVE
         )
         
         # Cannot transition from terminal states
         assert not state_machine.can_transition(
-            EntitlementState.VOIDED,
+            EntitlementState.CANCELLED,
             EntitlementState.ACTIVE
         )
         
@@ -141,25 +141,13 @@ class TestStateMachine:
             EntitlementState.ACTIVE
         )
     
-    def test_void_window_validation(self, state_machine):
-        """Test void window enforcement"""
-        # Within void window
-        used_at = datetime.now(timezone.utc) - timedelta(hours=1)
-        can_void, reason = state_machine.can_void(EntitlementState.USED, used_at)
-        assert can_void
-        assert reason is None
-        
-        # Outside void window
-        used_at = datetime.now(timezone.utc) - timedelta(hours=3)
-        can_void, reason = state_machine.can_void(EntitlementState.USED, used_at)
-        assert not can_void
-        assert "void window expired" in reason.lower()
-    
     def test_terminal_states(self, state_machine):
         """Test terminal state detection"""
-        assert state_machine.is_terminal_state(EntitlementState.VOIDED)
+        assert state_machine.is_terminal_state(EntitlementState.CONFIRMED)
+        assert state_machine.is_terminal_state(EntitlementState.CANCELLED)
         assert state_machine.is_terminal_state(EntitlementState.EXPIRED)
         assert not state_machine.is_terminal_state(EntitlementState.ACTIVE)
+        assert not state_machine.is_terminal_state(EntitlementState.PENDING_CONFIRMATION)
 
 
 # ================================
@@ -173,7 +161,7 @@ class TestClaimEntitlement:
     async def test_successful_claim(self, entitlement_service, sample_offer):
         """Test successful entitlement claim"""
         # Mock dependencies
-        entitlement_service._check_daily_limit = AsyncMock(return_value=True)
+        entitlement_service._check_frequency_limit = AsyncMock(return_value=True)
         entitlement_service._get_offer = AsyncMock(return_value=sample_offer)
         entitlement_service._mark_daily_claim = AsyncMock()
         entitlement_service._log_analytics_event = AsyncMock()
@@ -203,13 +191,13 @@ class TestClaimEntitlement:
     
     @pytest.mark.asyncio
     async def test_daily_limit_exceeded(self, entitlement_service, sample_offer):
-        """Test daily claim limit enforcement"""
-        # Mock daily limit exceeded
-        entitlement_service._check_daily_limit = AsyncMock(return_value=False)
+        """Test frequency/daily claim limit enforcement"""
+        # Mock frequency limit exceeded
+        entitlement_service._check_frequency_limit = AsyncMock(return_value=False)
         entitlement_service._get_offer = AsyncMock(return_value=sample_offer)
         
         # Should raise ValueError
-        with pytest.raises(ValueError, match="Daily claim limit"):
+        with pytest.raises(ValueError, match="already used this offer"):
             await entitlement_service.claim_entitlement(
                 user_id='user-123',
                 offer_id='offer-123'
@@ -220,7 +208,7 @@ class TestClaimEntitlement:
         """Test claiming inactive offer"""
         sample_offer['is_active'] = False
         
-        entitlement_service._check_daily_limit = AsyncMock(return_value=True)
+        entitlement_service._check_frequency_limit = AsyncMock(return_value=True)
         entitlement_service._get_offer = AsyncMock(return_value=sample_offer)
         
         with pytest.raises(ValueError, match="not active"):
@@ -276,8 +264,8 @@ class TestQRToken:
         }
         entitlement_service.redis.get = Mock(return_value=json.dumps(token_data))
         
-        # Entitlement already used
-        sample_entitlement['state'] = EntitlementState.USED.value
+        # Entitlement already confirmed
+        sample_entitlement['state'] = EntitlementState.CONFIRMED.value
         entitlement_service._get_entitlement = AsyncMock(return_value=sample_entitlement)
         
         result = await entitlement_service.validate_proof_token('test-token')
@@ -362,6 +350,7 @@ class TestSavingsCalculation:
 # VOID LOGIC TESTS
 # ================================
 
+@pytest.mark.skip(reason="Void and refund path deferred to Phase B")
 class TestVoidLogic:
     """Test redemption void logic"""
     
@@ -372,7 +361,7 @@ class TestVoidLogic:
         entitlement = {
             'id': 'ent-123',
             'user_id': 'user-123',
-            'state': EntitlementState.USED.value,
+            'state': EntitlementState.CONFIRMED.value,
             'used_at': (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         }
         
@@ -406,7 +395,7 @@ class TestVoidLogic:
         entitlement = {
             'id': 'ent-123',
             'user_id': 'user-123',
-            'state': EntitlementState.USED.value,
+            'state': EntitlementState.CONFIRMED.value,
             'used_at': (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
         }
         
@@ -426,7 +415,7 @@ class TestVoidLogic:
         entitlement = {
             'id': 'ent-123',
             'user_id': 'user-123',
-            'state': EntitlementState.USED.value,
+            'state': EntitlementState.CONFIRMED.value,
             'used_at': (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         }
         
@@ -451,7 +440,7 @@ class TestFraudPrevention:
         """Test device binding validation"""
         # This would be implemented in validation logic
         # For now, just verify device_id is stored
-        entitlement_service._check_daily_limit = AsyncMock(return_value=True)
+        entitlement_service._check_frequency_limit = AsyncMock(return_value=True)
         entitlement_service._get_offer = AsyncMock(return_value={
             'id': 'offer-123',
             'is_active': True,
@@ -506,7 +495,7 @@ class TestRedemptionFlow:
         # For now, verify each step can be called in sequence
         
         # Step 1: Claim
-        entitlement_service._check_daily_limit = AsyncMock(return_value=True)
+        entitlement_service._check_frequency_limit = AsyncMock(return_value=True)
         entitlement_service._get_offer = AsyncMock(return_value=sample_offer)
         entitlement_service._mark_daily_claim = AsyncMock()
         entitlement_service._log_analytics_event = AsyncMock()

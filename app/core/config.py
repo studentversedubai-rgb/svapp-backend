@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # ================================
     # REDIS
     # ================================
-    REDIS_URL: str
+    REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_PASSWORD: str = ""
     REDIS_DB: int = 0
     

@@ -281,6 +281,8 @@ class EntitlementService:
             'user_id': user_id,
             'offer_id': entitlement['offer_id'],
             'device_id': entitlement.get('device_id'),
+            'proof_token': proof_token,
+            'backup_code': backup_code,
             'created_at': datetime.now().isoformat()
         }
 
