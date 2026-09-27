@@ -1611,7 +1611,7 @@ class AuthService:
         # 1. Confirm user has a completed account in public.users
         try:
             user_check = admin_client.table("users").select(
-                "id, email, verification_status, verification_rejection_reason"
+                "id, email, personal_email, verification_status, verification_rejection_reason"
             ).eq("email", email).execute()
             if not user_check.data:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email. Please sign up first.")
@@ -1674,7 +1674,11 @@ class AuthService:
             "message": "Login successful",
             "access_token": access_token,
             "token_type": "bearer",
-            "user": {"id": user_id, "email": email}
+            "user": {
+                "id": user_id,
+                "email": email,
+                "personal_email": user_row.get("personal_email"),
+            },
         }
 
     # ------------------------------------------------------------------

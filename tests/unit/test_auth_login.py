@@ -38,6 +38,7 @@ async def test_login_uses_admin_client_for_profile_lookup_hidden_by_rls():
     profile = {
         "id": "user-id",
         "email": "student@example.com",
+        "personal_email": "personal@example.com",
         "verification_status": "approved",
         "verification_rejection_reason": None,
     }
@@ -52,7 +53,11 @@ async def test_login_uses_admin_client_for_profile_lookup_hidden_by_rls():
         result = await AuthService().login(
             "student@example.com", "password", device_id="device-id"
         )
-    assert result["user"] == {"id": "user-id", "email": "student@example.com"}
+    assert result["user"] == {
+        "id": "user-id",
+        "email": "student@example.com",
+        "personal_email": "personal@example.com",
+    }
     admin.table.return_value.select.return_value.eq.assert_called_with(
         "email", "student@example.com"
     )
@@ -82,6 +87,7 @@ async def test_login_rejects_profile_and_auth_id_mismatch():
     profile = {
         "id": "profile-id",
         "email": "student@example.com",
+        "personal_email": "personal@example.com",
         "verification_status": "approved",
         "verification_rejection_reason": None,
     }
