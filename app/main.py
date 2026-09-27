@@ -7,6 +7,9 @@ registers all routers, and configures middleware.
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+from app.core.database import validate_database_configuration
 from app.core.redis import redis_manager
 from app.modules.auth.router import router as auth_router
 from app.modules.admin.router import router as admin_router
@@ -139,7 +142,8 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def startup_event():
         """Initialize connections and resources"""
-        redis_manager.connect()
+        await run_in_threadpool(validate_database_configuration)
+        await run_in_threadpool(redis_manager.connect)
         print("INFO: Startup complete")
     
     # ================================
@@ -197,4 +201,18 @@ async def root():
 @app.get("/health")
 async def health():
     """Health check endpoint for Railway"""
-    return {"status": "ok", "version": "1.0.0"}
+    database_ready = True
+    try:
+        await run_in_threadpool(validate_database_configuration)
+    except RuntimeError:
+        database_ready = False
+    redis_ready = await run_in_threadpool(redis_manager.is_ready)
+    ready = database_ready and redis_ready
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ok" if ready else "unavailable",
+            "version": "1.0.0",
+            "checks": {"database": database_ready, "redis": redis_ready},
+        },
+    )

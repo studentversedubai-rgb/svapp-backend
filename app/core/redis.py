@@ -32,15 +32,35 @@ class RedisManager:
             self.redis_client = redis.from_url(
                 redis_url,
                 decode_responses=True,
+                socket_timeout=2,
                 socket_connect_timeout=2  # Short timeout for local dev
             )
             # Test connection
             self.redis_client.ping()
             print("INFO: Connected to Redis")
         except Exception as e:
-            print(f"WARNING: Failed to connect to Redis: {e}")
-            print("INFO: Switching to IN-MEMORY storage (Dev Mode) - TTL supported")
             self.redis_client = None
+            if self.requires_shared_storage():
+                raise RuntimeError(
+                    "Redis is unavailable. Set REDIS_URL to the shared Redis service before deploying."
+                ) from None
+            print(f"WARNING: Failed to connect to Redis ({type(e).__name__})")
+            print("INFO: Switching to IN-MEMORY storage (Dev Mode) - TTL supported")
+
+    @staticmethod
+    def requires_shared_storage() -> bool:
+        return (
+            os.getenv("ENVIRONMENT", "development").strip().lower() == "production"
+            or bool(os.getenv("RAILWAY_PROJECT_ID"))
+        )
+
+    def is_ready(self) -> bool:
+        if self.redis_client is None:
+            return not self.requires_shared_storage()
+        try:
+            return bool(self.redis_client.ping())
+        except redis.RedisError:
+            return False
     
     def disconnect(self):
         """Close Redis connection"""
@@ -82,7 +102,6 @@ class RedisManager:
         # In-memory fallback WITH TTL support
         expiry = time.time() + ttl if ttl > 0 else None
         self.memory_store[key] = (value, expiry)
-        print(f"DEBUG: Stored in Memory with TTL {ttl}s: {key}={value}")
         return True
     
     def delete(self, key: str) -> bool:
