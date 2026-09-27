@@ -1602,15 +1602,15 @@ class AuthService:
         No 409 is ever raised here — a user can always log back in from a
         new device using their correct credentials.
         """
-        user_client = get_user_client()
+        email = self._normalize_email(email)
         admin_client = get_supabase_client()
-    
-        if not user_client or not admin_client:
+
+        if not admin_client:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
         # 1. Confirm user has a completed account in public.users
         try:
-            user_check = user_client.table("users").select(
+            user_check = admin_client.table("users").select(
                 "id, email, verification_status, verification_rejection_reason"
             ).eq("email", email).execute()
             if not user_check.data:
@@ -1638,6 +1638,11 @@ class AuthService:
         user_id = str(auth_response.user.id)
         access_token = auth_response.session.access_token
         user_row = user_check.data[0]
+        if str(user_row.get("id")) != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Account data is inconsistent. Please contact support.",
+            )
         verification_status = user_row.get("verification_status") or "approved"
 
         if verification_status != "approved":
@@ -1656,7 +1661,7 @@ class AuthService:
             update_payload: dict = {"logged_in": True}
             if device_id:
                 update_payload["device_id"] = device_id
-            user_client.table("users").update(update_payload).eq("id", user_id).execute()
+            admin_client.table("users").update(update_payload).eq("id", user_id).execute()
             logger.info(f"User logged in: {email}, device: {device_id or 'unknown'}")
         except Exception as e:
             logger.error(f"Failed to update login state: {e}")
