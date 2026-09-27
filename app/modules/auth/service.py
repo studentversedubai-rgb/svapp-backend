@@ -1611,7 +1611,7 @@ class AuthService:
         # 1. Confirm user has a completed account in public.users
         try:
             user_check = admin_client.table("users").select(
-                "id, email, personal_email, verification_status, verification_rejection_reason"
+                "id, email, personal_email, name, first_name, last_name, student_id, nationality, university, phone_number, age, date_of_birth, avatar_url, account_type, created_at, verification_status, verification_rejection_reason"
             ).eq("email", email).execute()
             if not user_check.data:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email. Please sign up first.")
@@ -1669,16 +1669,21 @@ class AuthService:
         # 4. Track login activity (best-effort)
         mark_login(user_id, app_version=app_version, platform=platform)
 
+        user_payload = {"id": user_id, "email": email}
+        for field in (
+            "personal_email", "name", "first_name", "last_name", "student_id",
+            "nationality", "university", "phone_number", "age", "date_of_birth",
+            "avatar_url", "account_type", "created_at",
+        ):
+            if field in user_row:
+                user_payload[field] = user_row.get(field)
+
         return {
             "status": "success",
             "message": "Login successful",
             "access_token": access_token,
             "token_type": "bearer",
-            "user": {
-                "id": user_id,
-                "email": email,
-                "personal_email": user_row.get("personal_email"),
-            },
+            "user": user_payload,
         }
 
     # ------------------------------------------------------------------
@@ -1831,7 +1836,9 @@ class AuthService:
 
     async def get_user_analytics(self, user_id: str) -> UserStats:
         """Calculate user analytics from redemptions."""
-        supabase = get_user_client()
+        supabase = get_supabase_client()
+        if not supabase:
+            return UserStats()
         try:
             response = supabase.table("redemptions") \
                 .select("discount_amount, total_bill_amount, final_amount") \

@@ -39,6 +39,9 @@ async def test_login_uses_admin_client_for_profile_lookup_hidden_by_rls():
         "id": "user-id",
         "email": "student@example.com",
         "personal_email": "personal@example.com",
+        "first_name": "Test",
+        "last_name": "Student",
+        "university": "Test University",
         "verification_status": "approved",
         "verification_rejection_reason": None,
     }
@@ -57,6 +60,9 @@ async def test_login_uses_admin_client_for_profile_lookup_hidden_by_rls():
         "id": "user-id",
         "email": "student@example.com",
         "personal_email": "personal@example.com",
+        "first_name": "Test",
+        "last_name": "Student",
+        "university": "Test University",
     }
     admin.table.return_value.select.return_value.eq.assert_called_with(
         "email", "student@example.com"
@@ -104,3 +110,36 @@ async def test_login_rejects_profile_and_auth_id_mismatch():
     assert exc.value.status_code == 500
     assert exc.value.detail == "Account data is inconsistent. Please contact support."
     admin.table.return_value.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analytics_uses_admin_client_for_rls_protected_rows():
+    redemptions = MagicMock()
+    redemptions.select.return_value.eq.return_value.eq.return_value.execute.return_value = query_result([
+        {"discount_amount": "20", "total_bill_amount": "100", "final_amount": "80"},
+        {"discount_amount": "5", "total_bill_amount": "50", "final_amount": "45"},
+    ])
+    users = MagicMock()
+    users.select.return_value.eq.return_value.execute.return_value = query_result([
+        {"account_type": "pro"}
+    ])
+    admin = MagicMock()
+    admin.table.side_effect = lambda table: redemptions if table == "redemptions" else users
+    with (
+        patch("app.modules.auth.service.get_user_client", side_effect=AssertionError("RLS client used")),
+        patch("app.modules.auth.service.get_supabase_client", return_value=admin),
+    ):
+        result = await AuthService().get_user_analytics("user-id")
+    assert result.total_redemptions == 2
+    assert result.total_saved == 25
+    assert result.total_spent == 150
+    assert result.subscription_status == "pro"
+
+
+@pytest.mark.asyncio
+async def test_analytics_returns_zero_values_when_admin_client_is_unavailable():
+    with patch("app.modules.auth.service.get_supabase_client", return_value=None):
+        result = await AuthService().get_user_analytics("user-id")
+    assert result.total_redemptions == 0
+    assert result.total_saved == 0
+    assert result.total_spent == 0
