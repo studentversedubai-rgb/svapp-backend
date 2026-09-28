@@ -21,7 +21,10 @@ from app.modules.tickets.router import router as tickets_router
 from app.modules.payments.router import router as payments_router
 from app.modules.online_deals.router import router as online_deals_router
 from app.modules.app_status.router import router as app_status_router
-from app.modules.notifications.router import router as notifications_router
+from app.modules.notifications.router import (
+    router as notifications_router,
+    admin_router as admin_notifications_router,
+)
 from app.modules.dine_in.router import router as dine_in_router
 from app.core.config import Settings, get_settings
 from app.middleware.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware, AppContextMiddleware
@@ -169,6 +172,7 @@ def create_app() -> FastAPI:
     app.include_router(online_deals_router, prefix="/api/v1/online-deals", tags=["online-deals"])
     app.include_router(app_status_router, prefix="/app-status", tags=["App Status"])
     app.include_router(notifications_router, tags=["Notifications"])
+    app.include_router(admin_notifications_router, tags=["Internal Admin Notifications"])
     app.include_router(dine_in_router, prefix="/dine-in", tags=["Dine-In"])
     
     from app.modules.payments.router import webhook_router

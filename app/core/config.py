@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     RESEND_FROM: str = "auth@loginotp.studentverse.app"
     POSTMARK_API_KEY: str = ""
     REVIEW_FROM_ADDRESS: str = "register@studentverse.app"
+    EXPO_ACCESS_TOKEN: str = ""
     
     # ================================
     # SV ORBIT
