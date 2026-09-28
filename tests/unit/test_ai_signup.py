@@ -84,6 +84,26 @@ async def test_automated_signup_rejects_failed_or_mismatched_documents(payload):
             )
     assert exc.value.status_code == 422
     assert exc.value.detail["code"] == "AI_VERIFICATION_FAILED"
+    assert exc.value.detail["message"] == (
+        "Student documents could not be validated. Please upload a valid student ID and enrollment document."
+    )
+
+
+@pytest.mark.asyncio
+async def test_orbit_document_processing_failure_is_not_reported_as_an_outage():
+    response = MagicMock(status_code=502)
+    with patch("app.modules.auth.service.httpx.AsyncClient", return_value=FakeClient(response=response)):
+        with pytest.raises(HTTPException) as exc:
+            await AuthService()._verify_automated_signup(
+                enrollment_payload=document("letter.pdf", "application/pdf"),
+                student_id_payload=document("student.jpg", "image/jpeg"),
+                first_name="Test",
+                last_name="Student",
+                university="Test University Dubai",
+            )
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "AI_VERIFICATION_FAILED"
+    assert "temporarily unavailable" not in exc.value.detail["message"]
 
 
 @pytest.mark.asyncio

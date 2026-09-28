@@ -322,6 +322,14 @@ class AuthService:
                 },
             ) from None
 
+        if response.status_code == 502:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "AI_VERIFICATION_FAILED",
+                    "message": "Student documents could not be validated. Please upload a valid student ID and enrollment document.",
+                },
+            )
         if response.status_code >= 500:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -335,7 +343,7 @@ class AuthService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "code": "AI_VERIFICATION_FAILED",
-                    "message": "The uploaded verification documents could not be processed.",
+                    "message": "Student documents could not be validated. Please upload a valid student ID and enrollment document.",
                 },
             )
 
@@ -355,11 +363,12 @@ class AuthService:
         )
 
         if result.get("approved") is not True or not name_matches or not university_matches:
-            errors = result.get("errors") if isinstance(result.get("errors"), list) else []
-            message = errors[0] if errors else "The documents do not match your signup information."
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"code": "AI_VERIFICATION_FAILED", "message": message},
+                detail={
+                    "code": "AI_VERIFICATION_FAILED",
+                    "message": "Student documents could not be validated. Please upload a valid student ID and enrollment document.",
+                },
             )
         return result
 
