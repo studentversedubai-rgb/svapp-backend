@@ -86,13 +86,22 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[
             "https://svmerchant.vercel.app",
-            "https://www.studentverseofficial.com",   # production merchant dashboard
-            "http://localhost:5173",            # local Vite dev server
-            "http://localhost:4173",            # local Vite preview server
+            "https://merchant.studentverse.app",
+            "https://www.studentverseofficial.com",
         ],
+        # Vite may select another port when 5173 is occupied. Loopback origins
+        # are development-only and still restricted to http(s) localhost/IP.
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-Device-ID", "X-App-Version", "X-Platform"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-Device-ID",
+            "X-App-Version",
+            "X-Platform",
+            "X-Shift-Token",
+        ],
     )
 
     settings_obj = Settings() # Validate environments immediately on boot
