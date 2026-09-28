@@ -112,7 +112,7 @@ x_shift_token: str = Header(..., alias="X-Shift-Token")):
     """
     try:
         result = await merchant_service.confirm_redemption(
-            code=request.proof_token or request.backup_code,
+            code=request.proof_token,
             total_bill_amount=request.total_bill_amount,
             session_token=x_shift_token
         )

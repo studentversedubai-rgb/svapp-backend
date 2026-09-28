@@ -43,15 +43,8 @@ class MerchantValidateResponse(BaseModel):
 
 class MerchantConfirmRequest(BaseModel):
     """Request to confirm redemption with bill amount"""
-    proof_token: Optional[str] = Field(None, description="QR proof token")
-    backup_code: Optional[str] = Field(None, description="4-character backup code")
+    proof_token: str = Field(..., description="QR proof token")
     total_bill_amount: Decimal = Field(..., gt=0, description="Total bill before discount")
-
-    @model_validator(mode="after")
-    def require_token_or_backup(self) -> "MerchantConfirmRequest":
-        if not self.proof_token and not self.backup_code:
-            raise ValueError("Either proof_token or backup_code must be provided")
-        return self
 
 
 class MerchantConfirmResponse(BaseModel):
