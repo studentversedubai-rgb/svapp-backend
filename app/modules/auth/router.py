@@ -116,6 +116,7 @@ async def manual_signup(
     date_of_birth: str = Form(...),
     password: str = Form(...),
     student_id: str = Form(""),
+    automated_verification: bool = Form(False),
     enrollment_document: Optional[UploadFile] = File(None),
     student_id_document: Optional[UploadFile] = File(None),
 ):
@@ -144,6 +145,7 @@ async def manual_signup(
         student_id=student_id or None,
         enrollment_document=enrollment_document,
         student_id_document=student_id_document,
+        automated_verification=automated_verification,
         app_version=getattr(request.state, "app_version", None),
         platform=getattr(request.state, "platform", None),
     )

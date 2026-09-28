@@ -16,6 +16,8 @@ import logging
 import uuid
 import os
 import mimetypes
+import re
+import httpx
 from io import BytesIO
 from datetime import date, datetime, timezone
 from typing import Optional, Dict, Any
@@ -31,6 +33,9 @@ VERIFICATION_BUCKET_NAME = os.getenv("VERIFICATION_BUCKET_NAME", "user-verificat
 VERIFICATION_FILE_MAX_BYTES = int(os.getenv("VERIFICATION_FILE_MAX_BYTES", "10485760"))
 PROFILE_IMAGE_BUCKET_NAME = os.getenv("PROFILE_IMAGE_BUCKET_NAME", "user-profile-images")
 PROFILE_IMAGE_MAX_BYTES = int(os.getenv("PROFILE_IMAGE_MAX_BYTES", "5242880"))
+AI_SIGNUP_URL = os.getenv(
+    "AI_SIGNUP_URL", "https://sv-orbit-ai-signup-production.up.railway.app"
+).strip().rstrip("/")
 ALLOWED_PROFILE_IMAGE_MIME_TYPES = {
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
@@ -278,6 +283,84 @@ class AuthService:
             "filename": upload.filename,
         }
 
+    @staticmethod
+    def _normalize_identity_text(value: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
+
+    async def _verify_automated_signup(
+        self,
+        *,
+        enrollment_payload: Dict[str, Any],
+        student_id_payload: Dict[str, Any],
+        first_name: str,
+        last_name: str,
+        university: str,
+    ) -> Dict[str, Any]:
+        files = {
+            "student_id": (
+                student_id_payload["filename"],
+                student_id_payload["bytes"],
+                student_id_payload["mime_type"],
+            ),
+            "university_letter": (
+                enrollment_payload["filename"],
+                enrollment_payload["bytes"],
+                enrollment_payload["mime_type"],
+            ),
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(f"{AI_SIGNUP_URL}/verify", files=files)
+        except httpx.RequestError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "AI_VERIFICATION_UNAVAILABLE",
+                    "message": "Automated verification is temporarily unavailable. Please try again or use manual verification.",
+                },
+            ) from None
+
+        if response.status_code >= 500:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "AI_VERIFICATION_UNAVAILABLE",
+                    "message": "Automated verification is temporarily unavailable. Please try again or use manual verification.",
+                },
+            )
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "AI_VERIFICATION_FAILED",
+                    "message": "The uploaded verification documents could not be processed.",
+                },
+            )
+
+        result = response.json()
+        extracted = result.get("extracted") or {}
+        expected_name = self._normalize_identity_text(f"{first_name} {last_name}")
+        document_name = self._normalize_identity_text(extracted.get("name_from_id", ""))
+        expected_university = self._normalize_identity_text(university)
+        document_university = self._normalize_identity_text(extracted.get("university", ""))
+        name_matches = all(part in document_name.split() for part in expected_name.split())
+        university_words = {
+            word for word in expected_university.split()
+            if len(word) > 3 and word not in {"university", "college", "institute"}
+        }
+        university_matches = bool(university_words) and all(
+            word in document_university.split() for word in university_words
+        )
+
+        if result.get("approved") is not True or not name_matches or not university_matches:
+            errors = result.get("errors") if isinstance(result.get("errors"), list) else []
+            message = errors[0] if errors else "The documents do not match your signup information."
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "AI_VERIFICATION_FAILED", "message": message},
+            )
+        return result
+
     def _upload_verification_document(
         self,
         *,
@@ -367,6 +450,9 @@ class AuthService:
             "verification_submitted_at": datetime.now(timezone.utc).isoformat(),
             "signup_method": signup_method,
         }
+        if verification_status == "approved":
+            profile_data["verification_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+            profile_data["verification_reviewed_by"] = "automated_ai"
         if personal_email:
             profile_data["personal_email"] = personal_email
             profile_data["personal_email_verified_at"] = datetime.now(timezone.utc).isoformat()
@@ -1063,9 +1149,17 @@ class AuthService:
         student_id: Optional[str],
         enrollment_document: Optional[UploadFile],
         student_id_document: Optional[UploadFile],
+        automated_verification: bool = False,
         app_version: Optional[str] = None,
         platform: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if automated_verification and (
+            enrollment_document is None or student_id_document is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Automated verification requires both an enrollment document and a student ID photo.",
+            )
         if enrollment_document is None and student_id_document is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1074,10 +1168,6 @@ class AuthService:
 
         normalized_email = self._normalize_email(email)
         normalized_personal_email = self._normalize_email(personal_email)
-
-        # Verify the personal-email signup token (proves the personal inbox is
-        # reachable) and consume it so the same token cannot be reused.
-        self._consume_signup_token(normalized_personal_email, signup_token)
 
         if self._domain_is_university(normalized_personal_email):
             raise HTTPException(
@@ -1103,9 +1193,8 @@ class AuthService:
         )
 
         admin_client = get_supabase_client()
-        user_client = get_user_client()
 
-        if not admin_client or not user_client:
+        if not admin_client:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
         blacklist = admin_client.table("user_blacklist").select("email").eq("email", normalized_email).execute()
@@ -1122,7 +1211,7 @@ class AuthService:
                 },
             )
 
-        existing = user_client.table("users").select(
+        existing = admin_client.table("users").select(
             "id, verification_status"
         ).eq("email", normalized_email).execute()
         if existing.data:
@@ -1163,7 +1252,7 @@ class AuthService:
             )
 
         personal_dup = (
-            user_client.table("users")
+            admin_client.table("users")
             .select("id")
             .eq("personal_email", normalized_personal_email)
             .limit(1)
@@ -1186,6 +1275,23 @@ class AuthService:
             else None
         )
 
+        verification_status = "pending_review"
+        signup_method = "manual_review"
+        if automated_verification:
+            await self._verify_automated_signup(
+                enrollment_payload=enrollment_payload,
+                student_id_payload=student_id_payload,
+                first_name=first_name,
+                last_name=last_name,
+                university=canonical_university,
+            )
+            verification_status = "approved"
+            signup_method = "automated_ai"
+
+        # Verify the personal-email signup token (proves the personal inbox is
+        # reachable) and consume it so the same token cannot be reused.
+        self._consume_signup_token(normalized_personal_email, signup_token)
+
         auth_user = None
         submission_id = None
         uploaded_paths: list[str] = []
@@ -1197,7 +1303,7 @@ class AuthService:
                     "password": password,
                     "email_confirm": True,
                     "user_metadata": {
-                        "signup_method": "manual_review",
+                        "signup_method": signup_method,
                     },
                 })
                 auth_user = getattr(auth_response, "user", None) or getattr(auth_response, "data", None)
@@ -1247,8 +1353,8 @@ class AuthService:
                 user_id=user_id,
                 payload=register_request,
                 age=age,
-                signup_method="manual_review",
-                verification_status="pending_review",
+                signup_method=signup_method,
+                verification_status=verification_status,
                 personal_email=normalized_personal_email,
             )
 
@@ -1257,7 +1363,7 @@ class AuthService:
 
             submission_insert = admin_client.table("user_verification_submissions").insert({
                 "user_id": user_id,
-                "status": "pending_review",
+                "status": verification_status,
             }).execute()
             if not submission_insert.data:
                 raise HTTPException(
@@ -1294,12 +1400,17 @@ class AuthService:
                     submission_update
                 ).eq("id", submission_id).execute()
 
-            self._send_review_email(email_service.send_review_submission_email, normalized_email)
+            if verification_status == "approved":
+                self._send_review_email(email_service.send_review_approved_email, normalized_email)
+                message = "Your student status was verified automatically. You can now log in."
+            else:
+                self._send_review_email(email_service.send_review_submission_email, normalized_email)
+                message = "Your account is under review. We will email you once it is approved."
 
             return {
                 "email": normalized_email,
-                "verification_status": "pending_review",
-                "message": "Your account is under review. We will email you once it is approved.",
+                "verification_status": verification_status,
+                "message": message,
             }
         except HTTPException:
             for path in uploaded_paths:
