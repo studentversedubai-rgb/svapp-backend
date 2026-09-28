@@ -14,6 +14,22 @@ def document(filename, mime_type):
 @pytest.mark.parametrize(
     ("expected", "document"),
     [
+        ("Mohamed Elkholy", "Mohamed El Kholy"),
+        ("Example Student", "Example Middle Student"),
+        ("Sara Alnuaimi", "SARA AL NUAIMI"),
+    ],
+)
+def test_name_identity_accepts_spacing_and_middle_name_variants(expected, document):
+    assert AuthService._name_identity_matches(expected, document) is True
+
+
+def test_name_identity_rejects_different_surname():
+    assert AuthService._name_identity_matches("Example Student", "Example Different") is False
+
+
+@pytest.mark.parametrize(
+    ("expected", "document"),
+    [
         ("American University in Dubai", "AUD"),
         ("University of Wollongong in Dubai", "UOWD Student Card"),
         ("Heriot-Watt University Dubai", "HWU"),

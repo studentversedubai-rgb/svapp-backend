@@ -297,6 +297,20 @@ class AuthService:
         return " ".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
 
     @classmethod
+    def _name_identity_matches(cls, expected: str, document: str) -> bool:
+        expected_text = cls._normalize_identity_text(expected)
+        document_text = cls._normalize_identity_text(document)
+        if not expected_text or not document_text:
+            return False
+        expected_parts = expected_text.split()
+        document_parts = document_text.split()
+        if all(part in document_parts for part in expected_parts):
+            return True
+        expected_compact = "".join(expected_parts)
+        document_compact = "".join(document_parts)
+        return expected_compact in document_compact or document_compact in expected_compact
+
+    @classmethod
     def _university_identity_matches(cls, expected: str, document: str) -> bool:
         expected_text = cls._normalize_identity_text(expected)
         document_text = cls._normalize_identity_text(document)
@@ -381,10 +395,10 @@ class AuthService:
 
         result = response.json()
         extracted = result.get("extracted") or {}
-        expected_name = self._normalize_identity_text(f"{first_name} {last_name}")
-        document_name = self._normalize_identity_text(extracted.get("name_from_id", ""))
+        expected_name = f"{first_name} {last_name}"
+        document_name = extracted.get("name_from_id", "")
         document_university = extracted.get("university", "")
-        name_matches = all(part in document_name.split() for part in expected_name.split())
+        name_matches = self._name_identity_matches(expected_name, document_name)
         university_matches = self._university_identity_matches(university, document_university)
 
         if result.get("approved") is not True or not name_matches or not university_matches:
