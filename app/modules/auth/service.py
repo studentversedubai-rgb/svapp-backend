@@ -1748,6 +1748,8 @@ class AuthService:
 
         user_id = str(auth_response.user.id)
         access_token = auth_response.session.access_token
+        refresh_token = auth_response.session.refresh_token
+        expires_in = auth_response.session.expires_in
         user_row = user_check.data[0]
         if str(user_row.get("id")) != user_id:
             raise HTTPException(
@@ -1793,6 +1795,8 @@ class AuthService:
             "status": "success",
             "message": "Login successful",
             "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": expires_in,
             "token_type": "bearer",
             "user": user_payload,
         }

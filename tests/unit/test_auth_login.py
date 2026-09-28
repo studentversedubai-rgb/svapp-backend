@@ -28,7 +28,11 @@ def auth_client(user_id="user-id"):
     client = MagicMock()
     client.auth.sign_in_with_password.return_value = SimpleNamespace(
         user=SimpleNamespace(id=user_id),
-        session=SimpleNamespace(access_token="access-token"),
+        session=SimpleNamespace(
+            access_token="access-token",
+            refresh_token="refresh-token",
+            expires_in=3600,
+        ),
     )
     return client
 
@@ -56,6 +60,9 @@ async def test_login_uses_admin_client_for_profile_lookup_hidden_by_rls():
         result = await AuthService().login(
             "student@example.com", "password", device_id="device-id"
         )
+    assert result["access_token"] == "access-token"
+    assert result["refresh_token"] == "refresh-token"
+    assert result["expires_in"] == 3600
     assert result["user"] == {
         "id": "user-id",
         "email": "student@example.com",

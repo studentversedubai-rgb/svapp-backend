@@ -10,14 +10,32 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.database import get_supabase_client
 from app.core.activity import touch_last_active
-from jose import jwt, JWTError
-from app.core.config import settings
 
 
 logger = logging.getLogger(__name__)
 
 # Security scheme for JWT bearer tokens
 security = HTTPBearer()
+
+
+def _resolve_token_user(supabase, token: str) -> Dict[str, str]:
+    try:
+        response = supabase.auth.get_user(token)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    auth_user = getattr(response, "user", None)
+    user_id = getattr(auth_user, "id", None)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"sub": str(user_id), "email": getattr(auth_user, "email", None)}
 
 
 async def get_current_user(
@@ -51,27 +69,8 @@ async def get_current_user(
     token = credentials.credentials
 
     try:
-        # 1. Decode token locally (< 1ms)
-        try:
-            payload = jwt.decode(
-                token,
-                settings.jwt_secret_key,
-                algorithms=[settings.JWT_ALGORITHM],
-                audience="authenticated"
-            )
-            user_id = payload.get("sub")
-            if not user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token payload",
-                    headers={"WWW-Authenticate": "Bearer"}
-                )
-        except JWTError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+        payload = _resolve_token_user(supabase, token)
+        user_id = payload["sub"]
 
         # 2. Fetch user details from public.users
         try:
@@ -187,16 +186,9 @@ async def get_optional_user(request: Request) -> Optional[Dict]:
 
     try:
         try:
-            payload = jwt.decode(
-                token,
-                settings.jwt_secret_key,
-                algorithms=[settings.JWT_ALGORITHM],
-                audience="authenticated"
-            )
-            user_id = payload.get("sub")
-            if not user_id:
-                return None
-        except JWTError:
+            payload = _resolve_token_user(supabase, token)
+            user_id = payload["sub"]
+        except HTTPException:
             return None
 
         user_result = supabase.table("users").select("*").eq("id", user_id).execute()
@@ -231,28 +223,9 @@ async def get_current_user_no_device_check(
     token = credentials.credentials
 
     try:
-        try:
-            payload = jwt.decode(
-                token,
-                settings.jwt_secret_key,
-                algorithms=[settings.JWT_ALGORITHM],
-                audience="authenticated"
-            )
-            user_id = payload.get("sub")
-            if not user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token payload",
-                    headers={"WWW-Authenticate": "Bearer"}
-                )
-        except JWTError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+        payload = _resolve_token_user(supabase, token)
+        user_id = payload["sub"]
 
-        
         user_result = supabase.table("users").select("*").eq("id", user_id).execute()
         
         if not user_result.data:
