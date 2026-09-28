@@ -1106,13 +1106,13 @@ class AuthService:
 
     async def get_manual_signup_status(self, email: str) -> Dict[str, Any]:
         normalized_email = self._normalize_email(email)
-        user_client = get_user_client()
-        if not user_client:
+        admin_client = get_supabase_client()
+        if not admin_client:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
         try:
             result = (
-                user_client.table("users")
+                admin_client.table("users")
                 .select("email, verification_status, verification_rejection_reason")
                 .eq("email", normalized_email)
                 .limit(1)
@@ -1120,7 +1120,7 @@ class AuthService:
             )
             if not result.data:
                 result = (
-                    user_client.table("users")
+                    admin_client.table("users")
                     .select("email, verification_status, verification_rejection_reason")
                     .eq("personal_email", normalized_email)
                     .limit(1)

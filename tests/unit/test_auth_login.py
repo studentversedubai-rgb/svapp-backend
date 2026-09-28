@@ -120,6 +120,25 @@ async def test_login_rejects_profile_and_auth_id_mismatch():
 
 
 @pytest.mark.asyncio
+async def test_manual_signup_status_uses_admin_client_and_returns_rejection():
+    admin = MagicMock()
+    admin.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = query_result([
+        {
+            "email": "student@example.com",
+            "verification_status": "rejected",
+            "verification_rejection_reason": "Document is unreadable",
+        }
+    ])
+    with (
+        patch("app.modules.auth.service.get_user_client", side_effect=AssertionError("RLS client used")),
+        patch("app.modules.auth.service.get_supabase_client", return_value=admin),
+    ):
+        result = await AuthService().get_manual_signup_status("student@example.com")
+    assert result["verification_status"] == "rejected"
+    assert result["review_reason"] == "Document is unreadable"
+
+
+@pytest.mark.asyncio
 async def test_analytics_uses_admin_client_for_rls_protected_rows():
     redemptions = MagicMock()
     redemptions.select.return_value.eq.return_value.eq.return_value.execute.return_value = query_result([
