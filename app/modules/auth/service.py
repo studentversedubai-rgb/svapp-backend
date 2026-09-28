@@ -22,6 +22,7 @@ from io import BytesIO
 from datetime import date, datetime, timezone
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, status, UploadFile
+from pydantic import ValidationError as PydanticValidationError
 from app.core.database import get_user_client, get_supabase_client, create_fresh_supabase_client
 from app.core.redis import redis_manager
 from app.core.email import email_service
@@ -1178,19 +1179,28 @@ class AuthService:
         canonical_university = self._lookup_verified_university(normalized_email)
         date_of_birth_iso, age = self._parse_date_of_birth(date_of_birth)
 
-        register_request = RegisterRequest(
-            email=normalized_email,
-            name=f"{first_name} {last_name}",
-            first_name=first_name,
-            last_name=last_name,
-            student_id=student_id,
-            nationality=nationality,
-            university=canonical_university,
-            phone_number=phone_number,
-            age=age,
-            date_of_birth=date_of_birth_iso,
-            password=password,
-        )
+        try:
+            register_request = RegisterRequest(
+                email=normalized_email,
+                name=f"{first_name} {last_name}",
+                first_name=first_name,
+                last_name=last_name,
+                student_id=student_id,
+                nationality=nationality,
+                university=canonical_university,
+                phone_number=phone_number,
+                age=age,
+                date_of_birth=date_of_birth_iso,
+                password=password,
+            )
+        except PydanticValidationError as exc:
+            message = str(exc.errors()[0].get("msg") or "Invalid signup details")
+            if message.startswith("Value error, "):
+                message = message[len("Value error, "):]
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=message,
+            ) from exc
 
         admin_client = get_supabase_client()
 
