@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -136,6 +136,41 @@ async def test_manual_signup_status_uses_admin_client_and_returns_rejection():
         result = await AuthService().get_manual_signup_status("student@example.com")
     assert result["verification_status"] == "rejected"
     assert result["review_reason"] == "Document is unreadable"
+
+
+@pytest.mark.asyncio
+async def test_manual_resubmission_uses_admin_client_for_rejected_profile():
+    admin = MagicMock()
+    admin.table.return_value.select.return_value.eq.return_value.execute.return_value = query_result([
+        {
+            "id": "user-id",
+            "email": "student@example.com",
+            "verification_status": "rejected",
+        }
+    ])
+    auth = MagicMock()
+    auth.auth.sign_in_with_password.side_effect = Exception("invalid password")
+    service = AuthService()
+    service._read_verification_file = AsyncMock(return_value={
+        "filename": "student.jpg",
+        "bytes": b"image",
+        "mime_type": "image/jpeg",
+        "extension": ".jpg",
+    })
+    with (
+        patch("app.modules.auth.service.get_user_client", side_effect=AssertionError("RLS client used")),
+        patch("app.modules.auth.service.get_supabase_client", return_value=admin),
+        patch("app.modules.auth.service.create_fresh_supabase_client", return_value=auth),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await service.manual_signup_resubmit(
+                email="student@example.com",
+                password="wrong-password",
+                enrollment_document=None,
+                student_id_document=MagicMock(),
+            )
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Invalid email or password"
 
 
 @pytest.mark.asyncio

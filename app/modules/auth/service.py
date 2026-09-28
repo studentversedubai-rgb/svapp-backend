@@ -1519,13 +1519,11 @@ class AuthService:
             else None
         )
 
-        user_client = get_user_client()
         admin_client = get_supabase_client()
-        if not user_client or not admin_client:
+        if not admin_client:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database connection error")
 
-
-        user_lookup = user_client.table("users").select(
+        user_lookup = admin_client.table("users").select(
             "id, email, verification_status"
         ).eq("email", normalized_email).execute()
         if not user_lookup.data:
@@ -1553,6 +1551,14 @@ class AuthService:
 
         user_id = str(auth_response.user.id)
         access_token = auth_response.session.access_token
+        if user_id != str(user.get("id")):
+            try:
+                admin_client.auth.admin.sign_out(access_token)
+            finally:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Account data is inconsistent. Please contact support.",
+                )
 
         submission_id = None
         uploaded_paths: list[str] = []

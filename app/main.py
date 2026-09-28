@@ -127,7 +127,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         detail = exc.detail
-        if exc.status_code == 404:
+        if exc.status_code == 404 and detail == "Not Found":
             detail = "Resource not found."
             
         return JSONResponse(
