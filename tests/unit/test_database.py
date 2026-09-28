@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import dotenv
@@ -127,6 +128,41 @@ async def test_health_passes_when_dependencies_are_ready(backend):
     response = await backend.health()
     assert response.status_code == 200
     assert json.loads(response.body)["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_health_reports_postmark_and_stripe_configuration(backend, monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "get_settings",
+        lambda: SimpleNamespace(
+            POSTMARK_API_KEY="postmark-token",
+            REVIEW_FROM_ADDRESS="verified@example.com",
+            STRIPE_SECRET_KEY="stripe-key",
+            STRIPE_WEBHOOK_SECRET="webhook-secret",
+        ),
+    )
+    response = await backend.health()
+    body = json.loads(response.body)
+    assert body["integrations"] == {"postmark": True, "stripe": True}
+
+
+@pytest.mark.asyncio
+async def test_health_reports_unconfigured_optional_integrations(backend, monkeypatch):
+    monkeypatch.setattr(
+        backend,
+        "get_settings",
+        lambda: SimpleNamespace(
+            POSTMARK_API_KEY="",
+            REVIEW_FROM_ADDRESS="verified@example.com",
+            STRIPE_SECRET_KEY="",
+            STRIPE_WEBHOOK_SECRET="",
+        ),
+    )
+    response = await backend.health()
+    body = json.loads(response.body)
+    assert body["integrations"] == {"postmark": False, "stripe": False}
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

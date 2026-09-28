@@ -23,7 +23,7 @@ from app.modules.online_deals.router import router as online_deals_router
 from app.modules.app_status.router import router as app_status_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.dine_in.router import router as dine_in_router
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.middleware.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware, AppContextMiddleware
 from app.middleware.ratelimit import RateLimitMiddleware
 
@@ -207,6 +207,11 @@ async def health():
     except RuntimeError:
         database_ready = False
     redis_ready = await run_in_threadpool(redis_manager.is_ready)
+    settings = get_settings()
+    integrations = {
+        "postmark": bool(settings.POSTMARK_API_KEY and settings.REVIEW_FROM_ADDRESS),
+        "stripe": bool(settings.STRIPE_SECRET_KEY and settings.STRIPE_WEBHOOK_SECRET),
+    }
     ready = database_ready and redis_ready
     return JSONResponse(
         status_code=200 if ready else 503,
@@ -214,5 +219,6 @@ async def health():
             "status": "ok" if ready else "unavailable",
             "version": "1.0.0",
             "checks": {"database": database_ready, "redis": redis_ready},
+            "integrations": integrations,
         },
     )
