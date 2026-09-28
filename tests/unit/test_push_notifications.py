@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,9 +30,9 @@ class FakeHttpClient:
 
 def database_with_tokens(tokens):
     token_table = MagicMock()
-    token_table.select.return_value.eq.return_value.execute.return_value = SimpleNamespace(data=tokens)
-    token_table.select.return_value.eq.return_value.in_.return_value.execute.return_value = SimpleNamespace(data=tokens)
-    token_table.update.return_value.in_.return_value.execute.return_value = SimpleNamespace(data=[])
+    token_table.select.return_value.execute.return_value = SimpleNamespace(data=tokens)
+    token_table.select.return_value.in_.return_value.execute.return_value = SimpleNamespace(data=tokens)
+    token_table.delete.return_value.in_.return_value.execute.return_value = SimpleNamespace(data=[])
     analytics_table = MagicMock()
     analytics_table.insert.return_value.execute.return_value = SimpleNamespace(data=[{"id": "event-id"}])
     database = MagicMock()
@@ -42,10 +43,10 @@ def database_with_tokens(tokens):
 @pytest.mark.asyncio
 async def test_push_campaign_sends_enabled_unique_expo_tokens_and_logs_history():
     tokens = [
-        {"id": "1", "user_id": "u1", "expo_push_token": "ExponentPushToken[token-1]", "device_platform": "ios"},
-        {"id": "2", "user_id": "u1", "expo_push_token": "ExponentPushToken[token-1]", "device_platform": "ios"},
-        {"id": "3", "user_id": "u2", "expo_push_token": "not-an-expo-token", "device_platform": "web"},
-        {"id": "4", "user_id": "u3", "expo_push_token": "ExpoPushToken[token-2]", "device_platform": "android"},
+        {"id": "1", "user_id": "u1", "push_token": "ExponentPushToken[token-1]", "platform": "ios"},
+        {"id": "2", "user_id": "u1", "push_token": "ExponentPushToken[token-1]", "platform": "ios"},
+        {"id": "3", "user_id": "u2", "push_token": "not-an-expo-token", "platform": "web"},
+        {"id": "4", "user_id": "u3", "push_token": "ExpoPushToken[token-2]", "platform": "android"},
     ]
     database, _, analytics = database_with_tokens(tokens)
     service = NotificationService()
@@ -81,7 +82,7 @@ async def test_push_campaign_sends_enabled_unique_expo_tokens_and_logs_history()
 @pytest.mark.asyncio
 async def test_unregistered_device_token_is_disabled():
     tokens = [
-        {"id": "1", "user_id": "u1", "expo_push_token": "ExponentPushToken[dead]", "device_platform": "ios"}
+        {"id": "1", "user_id": "u1", "push_token": "ExponentPushToken[dead]", "platform": "ios"}
     ]
     database, token_table, _ = database_with_tokens(tokens)
     service = NotificationService()
@@ -92,8 +93,8 @@ async def test_unregistered_device_token_is_disabled():
     with patch("app.modules.notifications.service.httpx.AsyncClient", return_value=http):
         result = await service.send_campaign(title="Test", body="Body", actor="admin")
     assert result["failed_count"] == 1
-    token_table.update.return_value.in_.assert_called_once_with(
-        "expo_push_token", ["ExponentPushToken[dead]"]
+    token_table.delete.return_value.in_.assert_called_once_with(
+        "push_token", ["ExponentPushToken[dead]"]
     )
 
 
@@ -127,9 +128,8 @@ async def test_pending_application_can_register_push_token_with_one_time_token()
     assert result["success"] is True
     table.insert.assert_called_once_with({
         "user_id": "user-id",
-        "expo_push_token": "ExponentPushToken[test]",
-        "device_platform": "ios",
-        "is_enabled": True,
+        "push_token": "ExponentPushToken[test]",
+        "platform": "ios",
     })
     delete.assert_called_once_with("sv:app:auth:push_registration:registration-token")
 
@@ -151,3 +151,43 @@ async def test_review_decision_push_copy(approved, title, status):
     assert send.await_args.kwargs["title"] == title
     assert send.await_args.kwargs["user_ids"] == ["user-id"]
     assert send.await_args.kwargs["data"]["status"] == status
+
+
+@pytest.mark.asyncio
+async def test_due_scheduled_campaign_is_sent_and_marked_complete():
+    now = datetime.now(timezone.utc)
+    event = {
+        "id": 42,
+        "created_at": (now - timedelta(hours=1)).isoformat(),
+        "event_data": {
+            "title": "Scheduled title",
+            "body": "Scheduled body",
+            "actor": "sv-dashboard",
+            "audience": "selected",
+            "user_ids": ["user-id"],
+            "scheduled_for": (now - timedelta(minutes=1)).isoformat(),
+            "status": "scheduled",
+            "data": {"route": "/offers"},
+        },
+    }
+    analytics = MagicMock()
+    analytics.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[event])
+    analytics.update.return_value.eq.return_value.execute.return_value = SimpleNamespace(data=[])
+    database = MagicMock()
+    database.table.return_value = analytics
+    service = NotificationService()
+    service.supabase = database
+    service.send_campaign = AsyncMock(return_value={
+        "target_count": 1,
+        "sent_count": 1,
+        "failed_count": 0,
+    })
+
+    processed = await service.process_scheduled_campaigns(now)
+
+    assert processed == 1
+    assert service.send_campaign.await_args.kwargs["user_ids"] == ["user-id"]
+    assert service.send_campaign.await_args.kwargs["log_event"] is False
+    final_event = analytics.update.call_args_list[-1].args[0]["event_data"]
+    assert final_event["status"] == "sent"
+    assert final_event["sent_count"] == 1

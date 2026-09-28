@@ -73,17 +73,13 @@ async def register_push_token(
         # Check if token already exists for this user
         response = supabase.table("user_push_tokens").select("id").eq(
             "user_id", current_user_id
-        ).eq("expo_push_token", payload.token).execute()
+        ).eq("push_token", payload.token).execute()
 
         if response.data and len(response.data) > 0:
             # Token exists, update it
             token_id = response.data[0]["id"]
             update_response = supabase.table("user_push_tokens").update(
-                {
-                    "device_platform": payload.platform,
-                    "is_enabled": True,
-                    "updated_at": "now()",
-                }
+                {"platform": payload.platform}
             ).eq("id", token_id).execute()
 
             if getattr(update_response, "error", None):
@@ -97,9 +93,8 @@ async def register_push_token(
             insert_response = supabase.table("user_push_tokens").insert(
                 {
                     "user_id": current_user_id,
-                    "expo_push_token": payload.token,
-                    "device_platform": payload.platform,
-                    "is_enabled": True,
+                    "push_token": payload.token,
+                    "platform": payload.platform,
                 }
             ).execute()
 
@@ -136,15 +131,14 @@ async def register_application_push_token(payload: ApplicationPushTokenRegister)
     existing = (
         supabase.table("user_push_tokens")
         .select("id")
-        .eq("expo_push_token", payload.token)
+        .eq("push_token", payload.token)
         .limit(1)
         .execute()
     )
     values = {
         "user_id": str(user_id),
-        "expo_push_token": payload.token,
-        "device_platform": payload.platform,
-        "is_enabled": True,
+        "push_token": payload.token,
+        "platform": payload.platform,
     }
     if existing.data:
         token_id = existing.data[0]["id"]
@@ -175,15 +169,12 @@ async def update_push_token(
         if not supabase:
             raise HTTPException(status_code=500, detail="Database connection unavailable")
 
-        # Update the token
-        response = supabase.table("user_push_tokens").update(
-            {
-                "expo_push_token": payload.token,
-                "device_platform": payload.platform,
-                "is_enabled": payload.isEnabled,
-                "updated_at": "now()",
-            }
-        ).eq("user_id", user_id).execute()
+        if payload.isEnabled is False:
+            response = supabase.table("user_push_tokens").delete().eq("user_id", user_id).execute()
+        else:
+            response = supabase.table("user_push_tokens").update(
+                {"push_token": payload.token, "platform": payload.platform}
+            ).eq("user_id", user_id).execute()
 
         if getattr(response, "error", None):
             logger.error(f"Error updating push token: {response.error}")
@@ -215,16 +206,13 @@ async def delete_push_token(
         if not supabase:
             raise HTTPException(status_code=500, detail="Database connection unavailable")
 
-        # Soft delete by disabling
-        response = supabase.table("user_push_tokens").update(
-            {"is_enabled": False, "updated_at": "now()"}
-        ).eq("user_id", user_id).execute()
+        response = supabase.table("user_push_tokens").delete().eq("user_id", user_id).execute()
 
         if getattr(response, "error", None):
             logger.error(f"Error deleting push token: {response.error}")
             raise HTTPException(status_code=500, detail="Failed to delete push token")
 
-        return {"success": True, "message": "Push token disabled"}
+        return {"success": True, "message": "Push token removed"}
 
     except HTTPException:
         raise

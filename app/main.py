@@ -5,6 +5,9 @@ This is the main application file that initializes FastAPI,
 registers all routers, and configures middleware.
 """
 
+import asyncio
+from contextlib import suppress
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -25,6 +28,7 @@ from app.modules.notifications.router import (
     router as notifications_router,
     admin_router as admin_notifications_router,
 )
+from app.modules.notifications.service import scheduled_push_worker
 from app.modules.dine_in.router import router as dine_in_router
 from app.core.config import Settings, get_settings
 from app.middleware.middleware import SecurityHeadersMiddleware, RequestSizeLimitMiddleware, LoggingMiddleware, AppContextMiddleware
@@ -92,6 +96,7 @@ def create_app() -> FastAPI:
     )
 
     settings_obj = Settings() # Validate environments immediately on boot
+    scheduler_task = None
     
     # ================================
     # Security Middlewares
@@ -145,8 +150,10 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def startup_event():
         """Initialize connections and resources"""
+        nonlocal scheduler_task
         await run_in_threadpool(validate_database_configuration)
         await run_in_threadpool(redis_manager.connect)
+        scheduler_task = asyncio.create_task(scheduled_push_worker())
         print("INFO: Startup complete")
     
     # ================================
@@ -155,6 +162,11 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown_event():
         """Cleanup connections and resources"""
+        nonlocal scheduler_task
+        if scheduler_task:
+            scheduler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await scheduler_task
         redis_manager.disconnect()
         print("INFO: Shutdown complete")
     
