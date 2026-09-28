@@ -4,6 +4,7 @@ from typing import Any, Dict, Literal, Optional
 # Fixed imports: core/database exports get_supabase_client() and core/security exports get_current_user()
 from app.core.database import get_supabase_client
 from app.core.security import get_current_user
+from app.core.redis import redis_manager
 from app.core.admin_auth import require_internal_admin
 from app.modules.notifications.service import notification_service
 import logging
@@ -24,6 +25,12 @@ class PushTokenUpdate(BaseModel):
     token: str
     platform: str
     isEnabled: Optional[bool] = True
+
+
+class ApplicationPushTokenRegister(BaseModel):
+    registration_token: str
+    token: str
+    platform: str
 
 
 class AdminPushRequest(BaseModel):
@@ -113,6 +120,41 @@ async def register_push_token(
     except Exception as e:
         logger.error(f"Unexpected error registering push token: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/application")
+async def register_application_push_token(payload: ApplicationPushTokenRegister):
+    registration_key = f"sv:app:auth:push_registration:{payload.registration_token}"
+    user_id = redis_manager.get(registration_key)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Notification registration session expired")
+
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database connection unavailable")
+
+    existing = (
+        supabase.table("user_push_tokens")
+        .select("id")
+        .eq("expo_push_token", payload.token)
+        .limit(1)
+        .execute()
+    )
+    values = {
+        "user_id": str(user_id),
+        "expo_push_token": payload.token,
+        "device_platform": payload.platform,
+        "is_enabled": True,
+    }
+    if existing.data:
+        token_id = existing.data[0]["id"]
+        supabase.table("user_push_tokens").update(values).eq("id", token_id).execute()
+    else:
+        created = supabase.table("user_push_tokens").insert(values).execute()
+        token_id = created.data[0]["id"] if created.data else None
+
+    redis_manager.delete(registration_key)
+    return {"success": True, "message": "Push token registered", "tokenId": token_id}
 
 
 @router.put("/{user_id}")

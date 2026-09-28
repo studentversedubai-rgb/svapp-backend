@@ -28,6 +28,7 @@ from app.core.redis import redis_manager
 from app.core.email import email_service
 from app.core.activity import log_activity_event, mark_login, mark_signup_versions
 from app.modules.auth.schemas import RegisterRequest, ProfileUpdateRequest, UserStats
+from app.modules.notifications.service import notification_service
 
 logger = logging.getLogger(__name__)
 VERIFICATION_BUCKET_NAME = os.getenv("VERIFICATION_BUCKET_NAME", "user-verification-documents")
@@ -415,6 +416,24 @@ class AuthService:
             email_method(*args)
         except Exception as e:
             logger.error(f"Review email send failed: {e}")
+
+    async def _send_review_push(self, user_id: str, approved: bool) -> None:
+        title = "WELCOME TO THE SV FAMILY!" if approved else "Application update needed"
+        body = (
+            "You’re officially verified. Tap in and start claiming the student deals you were waiting for."
+            if approved
+            else "Your student application needs a quick fix. Open StudentVerse to see what to resubmit."
+        )
+        try:
+            await notification_service.send_campaign(
+                title=title,
+                body=body,
+                actor="verification-review",
+                user_ids=[str(user_id)],
+                data={"route": "/auth/review-status", "status": "approved" if approved else "rejected"},
+            )
+        except Exception as e:
+            logger.error(f"Review push send failed for user {user_id}: {e}")
 
     def _insert_user_row_for_signup(
         self,
@@ -1417,10 +1436,19 @@ class AuthService:
                 self._send_review_email(email_service.send_review_submission_email, normalized_email)
                 message = "Your account is under review. We will email you once it is approved."
 
+            notification_registration_token = None
+            if verification_status == "pending_review":
+                candidate = secrets.token_urlsafe(32)
+                if redis_manager.setex(
+                    f"sv:app:auth:push_registration:{candidate}", 86400, user_id
+                ):
+                    notification_registration_token = candidate
+
             return {
                 "email": normalized_email,
                 "verification_status": verification_status,
                 "message": message,
+                "notification_registration_token": notification_registration_token,
             }
         except HTTPException:
             for path in uploaded_paths:
@@ -2466,6 +2494,7 @@ class AuthService:
         }).eq("id", user_id).execute()
 
         self._send_review_email(email_service.send_review_approved_email, user_email)
+        await self._send_review_push(user_id, approved=True)
 
         return {
             "submission_id": submission_id,
@@ -2515,6 +2544,7 @@ class AuthService:
         }).eq("id", user_id).execute()
 
         self._send_review_email(email_service.send_review_rejected_email, user_email, reason)
+        await self._send_review_push(user_id, approved=False)
 
         return {
             "submission_id": submission_id,

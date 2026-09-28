@@ -3,7 +3,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.modules.notifications.router import AdminPushRequest
+from app.modules.auth.service import AuthService
+from app.modules.notifications.router import (
+    AdminPushRequest,
+    ApplicationPushTokenRegister,
+    register_application_push_token,
+)
 from app.modules.notifications.service import NotificationService
 
 
@@ -100,3 +105,49 @@ def test_selected_audience_requires_user_ids():
 def test_all_audience_rejects_hidden_user_filter():
     with pytest.raises(ValueError):
         AdminPushRequest(title="Title", body="Body", audience="all", user_ids=["u1"])
+
+
+@pytest.mark.asyncio
+async def test_pending_application_can_register_push_token_with_one_time_token():
+    database = MagicMock()
+    table = database.table.return_value
+    table.select.return_value.eq.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[])
+    table.insert.return_value.execute.return_value = SimpleNamespace(data=[{"id": "push-id"}])
+    payload = ApplicationPushTokenRegister(
+        registration_token="registration-token",
+        token="ExponentPushToken[test]",
+        platform="ios",
+    )
+    with (
+        patch("app.modules.notifications.router.redis_manager.get", return_value="user-id"),
+        patch("app.modules.notifications.router.redis_manager.delete") as delete,
+        patch("app.modules.notifications.router.get_supabase_client", return_value=database),
+    ):
+        result = await register_application_push_token(payload)
+    assert result["success"] is True
+    table.insert.assert_called_once_with({
+        "user_id": "user-id",
+        "expo_push_token": "ExponentPushToken[test]",
+        "device_platform": "ios",
+        "is_enabled": True,
+    })
+    delete.assert_called_once_with("sv:app:auth:push_registration:registration-token")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("approved", "title", "status"),
+    [
+        (True, "WELCOME TO THE SV FAMILY!", "approved"),
+        (False, "Application update needed", "rejected"),
+    ],
+)
+async def test_review_decision_push_copy(approved, title, status):
+    with patch(
+        "app.modules.auth.service.notification_service.send_campaign",
+        new_callable=AsyncMock,
+    ) as send:
+        await AuthService()._send_review_push("user-id", approved=approved)
+    assert send.await_args.kwargs["title"] == title
+    assert send.await_args.kwargs["user_ids"] == ["user-id"]
+    assert send.await_args.kwargs["data"]["status"] == status
