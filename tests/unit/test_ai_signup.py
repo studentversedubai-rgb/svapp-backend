@@ -11,6 +11,25 @@ def document(filename, mime_type):
     return {"filename": filename, "mime_type": mime_type, "bytes": b"document"}
 
 
+@pytest.mark.parametrize(
+    ("expected", "document"),
+    [
+        ("American University in Dubai", "AUD"),
+        ("University of Wollongong in Dubai", "UOWD Student Card"),
+        ("Heriot-Watt University Dubai", "HWU"),
+        ("University of Birmingham Dubai", "Birmingham Dubai"),
+    ],
+)
+def test_university_identity_accepts_known_full_name_and_aliases(expected, document):
+    assert AuthService._university_identity_matches(expected, document) is True
+
+
+def test_university_identity_rejects_another_institution():
+    assert AuthService._university_identity_matches(
+        "American University in Dubai", "University of Birmingham Dubai"
+    ) is False
+
+
 class FakeClient:
     def __init__(self, response=None, error=None):
         self.response = response

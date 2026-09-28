@@ -38,6 +38,13 @@ PROFILE_IMAGE_MAX_BYTES = int(os.getenv("PROFILE_IMAGE_MAX_BYTES", "5242880"))
 AI_SIGNUP_URL = os.getenv(
     "AI_SIGNUP_URL", "https://sv-orbit-ai-signup-production.up.railway.app"
 ).strip().rstrip("/")
+AI_UNIVERSITY_ALIASES = {
+    "university of wollongong in dubai": ("uowd", "wollongong"),
+    "american university in dubai": ("aud",),
+    "american university of sharjah": ("aus",),
+    "university of birmingham dubai": ("uob dubai", "birmingham"),
+    "heriot watt university dubai": ("heriot watt", "hwu"),
+}
 ALLOWED_PROFILE_IMAGE_MIME_TYPES = {
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
@@ -289,6 +296,31 @@ class AuthService:
     def _normalize_identity_text(value: str) -> str:
         return " ".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
 
+    @classmethod
+    def _university_identity_matches(cls, expected: str, document: str) -> bool:
+        expected_text = cls._normalize_identity_text(expected)
+        document_text = cls._normalize_identity_text(document)
+        if not expected_text or not document_text:
+            return False
+        if expected_text in document_text or document_text in expected_text:
+            return True
+
+        for canonical, aliases in AI_UNIVERSITY_ALIASES.items():
+            candidates = (canonical, *aliases)
+            normalized = tuple(cls._normalize_identity_text(value) for value in candidates)
+            if any(value in expected_text for value in normalized) and any(
+                value in document_text for value in normalized
+            ):
+                return True
+
+        distinctive_words = {
+            word
+            for word in expected_text.split()
+            if len(word) > 5
+            and word not in {"university", "college", "institute", "dubai", "sharjah"}
+        }
+        return any(word in document_text.split() for word in distinctive_words)
+
     async def _verify_automated_signup(
         self,
         *,
@@ -351,18 +383,17 @@ class AuthService:
         extracted = result.get("extracted") or {}
         expected_name = self._normalize_identity_text(f"{first_name} {last_name}")
         document_name = self._normalize_identity_text(extracted.get("name_from_id", ""))
-        expected_university = self._normalize_identity_text(university)
-        document_university = self._normalize_identity_text(extracted.get("university", ""))
+        document_university = extracted.get("university", "")
         name_matches = all(part in document_name.split() for part in expected_name.split())
-        university_words = {
-            word for word in expected_university.split()
-            if len(word) > 3 and word not in {"university", "college", "institute"}
-        }
-        university_matches = bool(university_words) and all(
-            word in document_university.split() for word in university_words
-        )
+        university_matches = self._university_identity_matches(university, document_university)
 
         if result.get("approved") is not True or not name_matches or not university_matches:
+            logger.info(
+                "Automated verification rejected: orbit_approved=%s name_match=%s university_match=%s",
+                result.get("approved") is True,
+                name_matches,
+                university_matches,
+            )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
