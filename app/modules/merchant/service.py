@@ -36,6 +36,7 @@ from app.shared.constants import (
     REDIS_PREFIX_BACKUP_CODE,
     REDIS_PREFIX_SHIFT_SESSION,
     SHIFT_SESSION_TTL_SECONDS,
+    MERCHANT_CONFIRMATION_TTL_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,25 @@ class MerchantService:
                 'state': EntitlementState.PENDING_CONFIRMATION.value,
                 'updated_at': datetime.now(timezone.utc).isoformat()
             }).eq('id', str(entitlement_id)).execute()
+
+            # The student-facing credential has a short display TTL. Once a
+            # cashier validates it, keep both forms alive long enough to enter
+            # and confirm the bill without asking the student to regenerate.
+            serialized_token_data = json.dumps(token_data)
+            proof_token = token_data.get('proof_token')
+            backup_code = token_data.get('backup_code')
+            if proof_token:
+                self.redis.setex(
+                    f"{REDIS_PREFIX_QR_TOKEN}{proof_token}",
+                    MERCHANT_CONFIRMATION_TTL_SECONDS,
+                    serialized_token_data,
+                )
+            if backup_code:
+                self.redis.setex(
+                    f"{REDIS_PREFIX_BACKUP_CODE}{backup_code.upper()}",
+                    MERCHANT_CONFIRMATION_TTL_SECONDS,
+                    serialized_token_data,
+                )
 
             # Return PASS with details
             return MerchantValidateResponse(

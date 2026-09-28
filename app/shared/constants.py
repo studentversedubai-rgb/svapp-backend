@@ -61,6 +61,7 @@ REDIS_PREFIX_SHIFT_SESSION = "sv:app:merchant:shift:"
 REDIS_PREFIX_BACKUP_CODE = "sv:app:redeem:backup:" # backup codes for QR redemption 
 
 SHIFT_SESSION_TTL_SECONDS = 43200 # 12 hours
+MERCHANT_CONFIRMATION_TTL_SECONDS = 600  # Keep a validated code alive during bill entry
 BACKUP_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXY23456789"
 BACKUP_CODE_LENGTH = 4
 
