@@ -36,7 +36,7 @@ async def test_automated_signup_sends_exact_orbit_contract_and_accepts_matching_
         },
     }
     client = FakeClient(response=response)
-    with patch("app.modules.auth.service.httpx.AsyncClient", return_value=client):
+    with patch("app.modules.auth.service.httpx.AsyncClient", return_value=client) as client_factory:
         result = await AuthService()._verify_automated_signup(
             enrollment_payload=document("letter.pdf", "application/pdf"),
             student_id_payload=document("student.jpg", "image/jpeg"),
@@ -45,6 +45,7 @@ async def test_automated_signup_sends_exact_orbit_contract_and_accepts_matching_
             university="Test University Dubai",
         )
     assert result["approved"] is True
+    client_factory.assert_called_once_with(timeout=120.0)
     _, kwargs = client.post.call_args
     assert client.post.call_args.args[0].endswith("/verify")
     assert set(kwargs["files"]) == {"student_id", "university_letter"}
