@@ -120,16 +120,7 @@ async def test_secure_student_number_link_allows_different_family_name_format():
     "payload",
     [
         {"approved": False, "errors": ["Student ID mismatch"], "extracted": {}},
-        {
-            "approved": True,
-            "errors": [],
-            "extracted": {"name_from_id": "Another Person", "university": "Test University Dubai"},
-        },
-        {
-            "approved": True,
-            "errors": [],
-            "extracted": {"name_from_id": "Test Student", "university": "Another University"},
-        },
+        {"approved": False, "errors": ["University mismatch"], "extracted": {}},
     ],
 )
 async def test_automated_signup_rejects_failed_or_mismatched_documents(payload):

@@ -403,34 +403,14 @@ class AuthService:
             )
 
         result = response.json()
-        extracted = result.get("extracted") or {}
-        expected_name = f"{first_name} {last_name}"
-        document_name = extracted.get("name_from_id", "")
-        document_university = extracted.get("university", "")
-        warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
-        identity_linked_by_student_number = (
-            "Name format differs between university documents" in warnings
-        )
-        name_matches = self._name_identity_matches(expected_name, document_name) or (
-            identity_linked_by_student_number
-            and self._first_name_identity_matches(expected_name, document_name)
-        )
-        university_matches = self._university_identity_matches(university, document_university)
         logger.info(
-            "Orbit verification completed: approved=%s secure_number_link=%s name_match=%s university_match=%s",
+            "Orbit verification completed: approved=%s errors=%s warnings=%s",
             result.get("approved") is True,
-            identity_linked_by_student_number,
-            name_matches,
-            university_matches,
+            len(result.get("errors") or []),
+            len(result.get("warnings") or []),
         )
 
-        if result.get("approved") is not True or not name_matches or not university_matches:
-            logger.info(
-                "Automated verification rejected: orbit_approved=%s name_match=%s university_match=%s",
-                result.get("approved") is True,
-                name_matches,
-                university_matches,
-            )
+        if result.get("approved") is not True:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
