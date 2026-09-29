@@ -538,6 +538,19 @@ class AuthService:
             supabase.table("users").insert(profile_data).execute()
         except Exception as e:
             err_msg = str(e).lower()
+            if signup_method == "automated_ai" and (
+                "23514" in err_msg or "users_signup_method_check" in err_msg
+            ):
+                fallback_profile = {**profile_data, "signup_method": "manual_review"}
+                try:
+                    supabase.table("users").insert(fallback_profile).execute()
+                    logger.warning(
+                        "users_signup_method_check does not include automated_ai; stored manual_review fallback"
+                    )
+                    return
+                except Exception as fallback_error:
+                    e = fallback_error
+                    err_msg = str(fallback_error).lower()
             if "23505" in err_msg or "duplicate" in err_msg or "unique" in err_msg:
                 if "personal_email" in err_msg:
                     raise HTTPException(
@@ -1390,7 +1403,7 @@ class AuthService:
                     "email_confirm": True,
                     "user_metadata": {
                         "signup_method": signup_method,
-                    },
+                    }
                 })
                 auth_user = getattr(auth_response, "user", None) or getattr(auth_response, "data", None)
                 if not auth_user:

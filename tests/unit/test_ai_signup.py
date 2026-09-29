@@ -4,6 +4,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
+from app.modules.auth.schemas import RegisterRequest
 from app.modules.auth.service import AuthService
 
 
@@ -45,6 +46,37 @@ def test_university_identity_rejects_another_institution():
     assert AuthService._university_identity_matches(
         "American University in Dubai", "University of Birmingham Dubai"
     ) is False
+
+
+def test_automated_profile_insert_falls_back_for_legacy_signup_method_constraint():
+    supabase = MagicMock()
+    execute = supabase.table.return_value.insert.return_value.execute
+    execute.side_effect = [
+        Exception("23514 users_signup_method_check"),
+        MagicMock(data=[{"id": "user-id"}]),
+    ]
+    request = RegisterRequest(
+        email="student@example.edu",
+        name="Test Student",
+        first_name="Test",
+        last_name="Student",
+        password="Password123_",
+    )
+    with patch("app.modules.auth.service.get_supabase_client", return_value=supabase):
+        AuthService()._insert_user_row_for_signup(
+            user_id="user-id",
+            payload=request,
+            age=20,
+            signup_method="automated_ai",
+            verification_status="approved",
+            personal_email="personal@example.com",
+        )
+    assert execute.call_count == 2
+    first_payload = supabase.table.return_value.insert.call_args_list[0].args[0]
+    fallback_payload = supabase.table.return_value.insert.call_args_list[1].args[0]
+    assert first_payload["signup_method"] == "automated_ai"
+    assert fallback_payload["signup_method"] == "manual_review"
+    assert fallback_payload["verification_reviewed_by"] == "automated_ai"
 
 
 class FakeClient:
