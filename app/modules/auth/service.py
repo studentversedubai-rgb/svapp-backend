@@ -298,17 +298,20 @@ class AuthService:
 
     @classmethod
     def _name_identity_matches(cls, expected: str, document: str) -> bool:
-        expected_text = cls._normalize_identity_text(expected)
-        document_text = cls._normalize_identity_text(document)
-        if not expected_text or not document_text:
+        expected_parts = cls._normalize_identity_text(expected).split()
+        document_parts = cls._normalize_identity_text(document).split()
+        if len(expected_parts) < 2 or len(document_parts) < 2:
             return False
-        expected_parts = expected_text.split()
-        document_parts = document_text.split()
-        if all(part in document_parts for part in expected_parts):
-            return True
-        expected_compact = "".join(expected_parts)
-        document_compact = "".join(document_parts)
-        return expected_compact in document_compact or document_compact in expected_compact
+        if expected_parts[0] != document_parts[0]:
+            return False
+
+        def family_suffixes(parts: list[str]) -> set[str]:
+            return {
+                "".join(parts[-size:])
+                for size in range(1, min(3, len(parts) - 1) + 1)
+            }
+
+        return bool(family_suffixes(expected_parts) & family_suffixes(document_parts))
 
     @classmethod
     def _university_identity_matches(cls, expected: str, document: str) -> bool:

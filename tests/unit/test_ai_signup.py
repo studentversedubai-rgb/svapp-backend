@@ -17,6 +17,7 @@ def document(filename, mime_type):
         ("Mohamed Elkholy", "Mohamed El Kholy"),
         ("Example Student", "Example Middle Student"),
         ("Sara Alnuaimi", "SARA AL NUAIMI"),
+        ("Mohamed Elkhouly", "Mohamed Khaled Ahmed Mahmoud Hassan Elkhouly"),
     ],
 )
 def test_name_identity_accepts_spacing_and_middle_name_variants(expected, document):
