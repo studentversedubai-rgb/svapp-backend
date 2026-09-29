@@ -90,6 +90,32 @@ async def test_automated_signup_sends_exact_orbit_contract_and_accepts_matching_
 
 
 @pytest.mark.asyncio
+async def test_secure_student_number_link_allows_different_family_name_format():
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "approved": True,
+        "errors": [],
+        "warnings": ["Name format differs between university documents"],
+        "extracted": {
+            "name_from_id": "Mohamed Elkhouly",
+            "university": "University of Wollongong in Dubai",
+        },
+    }
+    with patch(
+        "app.modules.auth.service.httpx.AsyncClient",
+        return_value=FakeClient(response=response),
+    ):
+        result = await AuthService()._verify_automated_signup(
+            enrollment_payload=document("letter.pdf", "application/pdf"),
+            student_id_payload=document("student.jpg", "image/jpeg"),
+            first_name="Mohamed",
+            last_name="Khaled",
+            university="University of Wollongong in Dubai",
+        )
+    assert result["approved"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [

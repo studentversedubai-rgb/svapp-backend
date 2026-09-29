@@ -297,6 +297,12 @@ class AuthService:
         return " ".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
 
     @classmethod
+    def _first_name_identity_matches(cls, expected: str, document: str) -> bool:
+        expected_parts = cls._normalize_identity_text(expected).split()
+        document_parts = cls._normalize_identity_text(document).split()
+        return bool(expected_parts and document_parts and expected_parts[0] == document_parts[0])
+
+    @classmethod
     def _name_identity_matches(cls, expected: str, document: str) -> bool:
         expected_parts = cls._normalize_identity_text(expected).split()
         document_parts = cls._normalize_identity_text(document).split()
@@ -401,8 +407,22 @@ class AuthService:
         expected_name = f"{first_name} {last_name}"
         document_name = extracted.get("name_from_id", "")
         document_university = extracted.get("university", "")
-        name_matches = self._name_identity_matches(expected_name, document_name)
+        warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+        identity_linked_by_student_number = (
+            "Name format differs between university documents" in warnings
+        )
+        name_matches = self._name_identity_matches(expected_name, document_name) or (
+            identity_linked_by_student_number
+            and self._first_name_identity_matches(expected_name, document_name)
+        )
         university_matches = self._university_identity_matches(university, document_university)
+        logger.info(
+            "Orbit verification completed: approved=%s secure_number_link=%s name_match=%s university_match=%s",
+            result.get("approved") is True,
+            identity_linked_by_student_number,
+            name_matches,
+            university_matches,
+        )
 
         if result.get("approved") is not True or not name_matches or not university_matches:
             logger.info(
