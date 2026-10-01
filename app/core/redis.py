@@ -103,6 +103,13 @@ class RedisManager:
         expiry = time.time() + ttl if ttl > 0 else None
         self.memory_store[key] = (value, expiry)
         return True
+
+    def set(self, key: str, value: str) -> bool:
+        if self.redis_client:
+            return bool(self.redis_client.set(name=key, value=value))
+
+        self.memory_store[key] = (value, None)
+        return True
     
     def delete(self, key: str) -> bool:
         """Delete key from Redis or Memory"""

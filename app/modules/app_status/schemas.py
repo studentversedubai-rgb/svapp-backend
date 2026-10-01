@@ -12,6 +12,10 @@ from datetime import datetime
 AppStatusMode = Literal['normal', 'maintenance', 'emergency', 'force_update', 'custom']
 
 
+class BaitnaVisibilityUpdate(BaseModel):
+    visible: bool
+
+
 class AppStatus(BaseModel):
     id: Optional[str] = None
     mode: AppStatusMode = 'normal'
@@ -31,6 +35,7 @@ class AppStatus(BaseModel):
     alert_dismissible: bool = False
 
     require_personal_email: bool = False
+    baitna_visible: bool = True
 
     updated_at: Optional[datetime] = None
     updated_by: Optional[str] = None

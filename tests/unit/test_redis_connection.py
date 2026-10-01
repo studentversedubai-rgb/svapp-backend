@@ -1,10 +1,12 @@
 import importlib.util
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import dotenv
 import pytest
 import redis
+
+from app.modules.app_status import service as app_status_service
 
 
 @pytest.fixture
@@ -34,7 +36,9 @@ def test_local_development_can_use_memory(redis_module, monkeypatch):
     assert manager.redis_client is None
     assert manager.is_ready()
     manager.setex("proof", 30, "test-token")
+    manager.set("feature", "false")
     assert manager.get("proof") == "test-token"
+    assert manager.get("feature") == "false"
 
 
 @pytest.mark.parametrize("deployment", ["production", "railway"])
@@ -67,3 +71,14 @@ def test_memory_storage_never_logs_redemption_tokens(redis_module, capsys):
     output = capsys.readouterr()
     assert "private-test-token" not in output.out + output.err
     assert "private-test-key" not in output.out + output.err
+
+
+def test_baitna_visibility_defaults_to_visible():
+    with patch.object(app_status_service.redis_manager, "get", return_value=None):
+        assert app_status_service.get_baitna_visibility()
+
+
+def test_baitna_visibility_persists_in_redis():
+    with patch.object(app_status_service.redis_manager, "set", return_value=True) as save:
+        assert app_status_service.set_baitna_visibility(False)
+    save.assert_called_once_with("sv:app:feature:baitna_visible", "false")

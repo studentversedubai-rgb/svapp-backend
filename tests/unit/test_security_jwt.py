@@ -1,8 +1,13 @@
+import hashlib
+import hmac
+import time
+
 import pytest
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from app.core.admin_auth import require_internal_admin
 from app.core.security import get_current_user, get_optional_user, get_current_user_no_device_check
 
 
@@ -116,3 +121,40 @@ async def test_no_device_check_accepts_modern_supabase_token():
     with patch("app.core.security.get_supabase_client", return_value=mock_supabase):
         user = await get_current_user_no_device_check(credentials)
     assert user == {"id": user_id, "email": "student@university.ae"}
+
+
+@pytest.mark.asyncio
+async def test_internal_admin_accepts_service_key_signature():
+    service_key = "shared-service-key"
+    timestamp = str(int(time.time()))
+    signature = hmac.new(service_key.encode(), timestamp.encode(), hashlib.sha256).hexdigest()
+    settings = SimpleNamespace(ADMIN_API_TOKEN="", SUPABASE_SERVICE_KEY=service_key)
+
+    with patch("app.core.admin_auth.Settings", return_value=settings):
+        actor = await require_internal_admin(
+            x_admin_token="",
+            x_admin_actor="dashboard",
+            x_admin_timestamp=timestamp,
+            x_admin_signature=signature,
+        )
+
+    assert actor == "dashboard"
+
+
+@pytest.mark.asyncio
+async def test_internal_admin_rejects_expired_service_key_signature():
+    service_key = "shared-service-key"
+    timestamp = str(int(time.time()) - 61)
+    signature = hmac.new(service_key.encode(), timestamp.encode(), hashlib.sha256).hexdigest()
+    settings = SimpleNamespace(ADMIN_API_TOKEN="", SUPABASE_SERVICE_KEY=service_key)
+
+    with patch("app.core.admin_auth.Settings", return_value=settings):
+        with pytest.raises(HTTPException) as exc_info:
+            await require_internal_admin(
+                x_admin_token="",
+                x_admin_actor="dashboard",
+                x_admin_timestamp=timestamp,
+                x_admin_signature=signature,
+            )
+
+    assert exc_info.value.status_code == 401
