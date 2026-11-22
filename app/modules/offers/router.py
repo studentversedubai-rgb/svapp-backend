@@ -49,7 +49,7 @@ def get_offer_service() -> OfferService:
     summary="Get home feed offers",
     description="Returns personalized offer feed for authenticated user. Sorted by distance if location provided."
 )
-async def get_home_feed(
+def get_home_feed(
     latitude: Optional[float] = Query(None, ge=-90, le=90, description="User latitude"),
     longitude: Optional[float] = Query(None, ge=-180, le=180, description="User longitude"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -94,7 +94,7 @@ async def get_home_feed(
         user_id = current_user['id'] if current_user else None
 
         # Fetch home feed
-        result = await offer_service.get_home_feed(
+        result = offer_service.get_home_feed(
             user_id=user_id,
             latitude=latitude,
             longitude=longitude,
@@ -124,7 +124,7 @@ async def get_home_feed(
     summary="Search offers",
     description="Search offers by keyword, category, and location with radius filtering"
 )
-async def search_offers(
+def search_offers(
     query: Optional[str] = Query(None, max_length=200, description="Search query"),
     category_id: Optional[str] = Query(None, description="Filter by category ID"),
     latitude: Optional[float] = Query(None, ge=-90, le=90, description="User latitude"),
@@ -193,7 +193,7 @@ async def search_offers(
         user_id = current_user['id'] if current_user else None
 
         # Perform search
-        result = await offer_service.search_offers(
+        result = offer_service.search_offers(
             user_id=user_id,
             query=query,
             category_id=category_id,
@@ -226,7 +226,7 @@ async def search_offers(
     summary="Get nearby offers",
     description="Get offers near user location sorted by distance"
 )
-async def get_nearby_offers(
+def get_nearby_offers(
     latitude: float = Query(..., ge=-90, le=90, description="User latitude (required)"),
     longitude: float = Query(..., ge=-180, le=180, description="User longitude (required)"),
     radius_km: float = Query(5.0, ge=0.1, le=50, description="Search radius in km (default: 5, max: 50)"),
@@ -265,7 +265,7 @@ async def get_nearby_offers(
         user_id = current_user['id'] if current_user else None
 
         # Fetch nearby offers
-        result = await offer_service.get_nearby_offers(
+        result = offer_service.get_nearby_offers(
             user_id=user_id,
             latitude=latitude,
             longitude=longitude,
@@ -297,7 +297,7 @@ async def get_nearby_offers(
     summary="Get offer details",
     description="Get detailed information about a specific offer"
 )
-async def get_offer_detail(
+def get_offer_detail(
     offer_id: str,
     latitude: Optional[float] = Query(None, ge=-90, le=90, description="User latitude for distance"),
     longitude: Optional[float] = Query(None, ge=-180, le=180, description="User longitude for distance"),
@@ -339,7 +339,7 @@ async def get_offer_detail(
         user_id = current_user['id'] if current_user else None
 
         # Fetch offer detail
-        offer = await offer_service.get_offer_detail(
+        offer = offer_service.get_offer_detail(
             user_id=user_id,
             offer_id=offer_id,
             latitude=latitude,
@@ -374,7 +374,7 @@ async def get_offer_detail(
     summary="Get all categories",
     description="Get list of all active offer categories"
 )
-async def get_categories(
+def get_categories(
     current_user: Optional[dict] = Depends(get_optional_user),
     offer_service: OfferService = Depends(get_offer_service)
 ):
@@ -389,7 +389,7 @@ async def get_categories(
         List of active categories sorted by sort_order
     """
     try:
-        categories = await offer_service.get_categories()
+        categories = offer_service.get_categories()
         return CategoriesResponse(categories=categories)
         
     except Exception as e:
