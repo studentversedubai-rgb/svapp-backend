@@ -6,7 +6,7 @@ via the Supabase service-role key, so this module only exposes a read path.
 """
 
 import logging
-from app.core.database import get_supabase_client
+from app.core.database import fetch_one
 from app.core.redis import redis_manager
 from app.modules.app_status.schemas import AppStatus
 
@@ -31,23 +31,11 @@ def _with_baitna_visibility(status: AppStatus) -> AppStatus:
 
 async def get_app_status() -> AppStatus:
     """Return the current app status, falling back to a safe default if unreachable."""
-    supabase = get_supabase_client()
-    if supabase is None:
-        logger.warning("Supabase client unavailable; returning default app_status")
-        return _with_baitna_visibility(_DEFAULT)
-
     try:
-        res = (
-            supabase.table('app_status')
-            .select('*')
-            .eq('singleton', True)
-            .limit(1)
-            .execute()
-        )
-        rows = res.data or []
-        if not rows:
+        row = fetch_one("SELECT * FROM app_status WHERE singleton = true LIMIT 1")
+        if not row:
             return _with_baitna_visibility(_DEFAULT)
-        return _with_baitna_visibility(AppStatus(**rows[0]))
+        return _with_baitna_visibility(AppStatus(**row))
     except Exception as exc:
         logger.error(f"Failed to read app_status: {exc}")
         return _with_baitna_visibility(_DEFAULT)

@@ -27,7 +27,7 @@ async def require_internal_admin(
         except ValueError:
             timestamp = 0
         expected = hmac.new(
-            settings.SUPABASE_SERVICE_KEY.encode(),
+            settings.JWT_SECRET.encode(),
             x_admin_timestamp.encode(),
             hashlib.sha256,
         ).hexdigest()

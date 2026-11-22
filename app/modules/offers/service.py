@@ -9,7 +9,7 @@ import math
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
-from app.core.database import get_user_client, get_supabase_client
+from app.core.database import fetch_one, fetch_all
 from app.modules.offers.schemas import (
     OfferListItem, OfferDetail, MerchantBasic, MerchantDetail,
     CategoryResponse, PaginatedOffersResponse
@@ -46,8 +46,7 @@ class OfferService:
     """Handles offer operations with eligibility filtering"""
     
     def __init__(self):
-        # ✅ FIXED: Use user client (anon key + JWT) to respect RLS
-        self.supabase = get_user_client()
+        pass
     
     # ================================
     # ELIGIBILITY LOGIC
@@ -216,10 +215,7 @@ class OfferService:
         try:
             # Dine-in venues live in a deliberately separate table from normal
             # merchants/online deals, but are normalized into this customer feed.
-            admin_db = get_supabase_client()
-            if not admin_db:
-                raise RuntimeError("Database connection unavailable")
-            dine_in_result = admin_db.table("dine_in_merchants").select("*").eq("is_active", True).execute()
+            dine_in_rows = fetch_all("SELECT * FROM dine_in_merchants WHERE is_active = true")
             dine_in_offers = [
                 {
                     "id": venue["id"],
@@ -240,24 +236,20 @@ class OfferService:
                     "is_active": venue.get("is_active", False), "is_featured": False,
                     "created_at": venue["created_at"], "max_claims_per_user": None,
                 }
-                for venue in (dine_in_result.data or [])
+                for venue in dine_in_rows
             ]
-            # Build query for eligible offers
-            query = self.supabase.table("offers").select(
-                "*, merchant:merchants(*), category:categories(*)"
-            )
             
-            # Filter: only active offers
-            query = query.eq("is_active", True)
-            
-            # Filter: date range validity
             now = datetime.now(timezone.utc).isoformat()
-            query = query.lte("valid_from", now).gte("valid_until", now)
+            sql = """
+                SELECT o.*, row_to_json(m.*) as merchant, row_to_json(c.*) as category
+                FROM offers o
+                LEFT JOIN merchants m ON m.id = o.merchant_id
+                LEFT JOIN categories c ON c.id = o.category_id
+                WHERE o.is_active = true AND o.valid_from <= %s AND o.valid_until >= %s
+            """
+            offers_data = fetch_all(sql, (now, now))
             
-            # Execute query
-            result = query.execute()
-            
-            if not result.data and not dine_in_offers:
+            if not offers_data and not dine_in_offers:
                 return PaginatedOffersResponse(
                     items=[],
                     total=0,
@@ -268,7 +260,7 @@ class OfferService:
             
             # Filter: merchant must be active
             active_offers = [
-                offer for offer in result.data
+                offer for offer in offers_data
                 if self._merchant_is_active(offer)
             ] + [offer for offer in dine_in_offers if self._merchant_is_active(offer)]
 
@@ -363,33 +355,29 @@ class OfferService:
             Paginated search results
         """
         try:
-            # Build base query
-            db_query = self.supabase.table("offers").select(
-                "*, merchant:merchants(*), category:categories(*)"
-            )
-            
-            # Filter: only active offers from active merchants
-            db_query = db_query.eq("is_active", True)
-            
-            # Filter: date range
             now = datetime.now(timezone.utc).isoformat()
-            db_query = db_query.lte("valid_from", now).gte("valid_until", now)
-            
-            # Filter: category
+            sql = """
+                SELECT o.*, row_to_json(m.*) as merchant, row_to_json(c.*) as category
+                FROM offers o
+                LEFT JOIN merchants m ON m.id = o.merchant_id
+                LEFT JOIN categories c ON c.id = o.category_id
+                WHERE o.is_active = true AND o.valid_from <= %s AND o.valid_until >= %s
+            """
+            params = [now, now]
+
             if category_id:
-                db_query = db_query.eq("category_id", category_id)
-            
-            # ✅ FIXED: Filter: text search with escaping
+                sql += " AND o.category_id = %s"
+                params.append(category_id)
+
             if query:
                 safe_query = escape_ilike(query)
-                
-                if safe_query:  # Only search if there's something left after sanitization
-                    db_query = db_query.or_(f"title.ilike.%{safe_query}%,description.ilike.%{safe_query}%")
-            
-            # Execute query
-            result = db_query.execute()
-            
-            if not result.data:
+                if safe_query:
+                    sql += " AND (o.title ILIKE %s OR o.description ILIKE %s)"
+                    params.extend([f"%{safe_query}%", f"%{safe_query}%"])
+
+            offers_data = fetch_all(sql, tuple(params))
+
+            if not offers_data:
                 return PaginatedOffersResponse(
                     items=[],
                     total=0,
@@ -397,10 +385,10 @@ class OfferService:
                     page_size=page_size,
                     total_pages=0
                 )
-            
+
             # Filter: merchant must be active
             active_offers = [
-                offer for offer in result.data
+                offer for offer in offers_data
                 if self._merchant_is_active(offer)
             ]
 
@@ -545,14 +533,17 @@ class OfferService:
         """
         try:
             # Fetch offer with merchant and category
-            result = self.supabase.table("offers").select(
-                "*, merchant:merchants(*), category:categories(*)"
-            ).eq("id", offer_id).execute()
+            sql = """
+                SELECT o.*, row_to_json(m.*) as merchant, row_to_json(c.*) as category
+                FROM offers o
+                LEFT JOIN merchants m ON m.id = o.merchant_id
+                LEFT JOIN categories c ON c.id = o.category_id
+                WHERE o.id = %s
+            """
+            offer = fetch_one(sql, (str(offer_id),))
             
-            if not result.data:
+            if not offer:
                 raise ValueError("Offer not found")
-            
-            offer = result.data[0]
             
             # Check if offer is eligible
             if not self.is_offer_eligible(offer, check_time=True, check_day=True):
@@ -596,11 +587,8 @@ class OfferService:
             List of active categories sorted by sort_order
         """
         try:
-            result = self.supabase.table("categories").select("*").eq(
-                "is_active", True
-            ).order("sort_order").execute()
-            
-            return [CategoryResponse(**cat) for cat in result.data]
+            rows = fetch_all("SELECT * FROM categories WHERE is_active = true ORDER BY sort_order")
+            return [CategoryResponse(**cat) for cat in rows]
             
         except Exception as e:
             logger.error(f"Error fetching categories: {e}")
@@ -634,14 +622,13 @@ class OfferService:
         counts: dict = {oid: 0 for oid in offer_ids}
 
         try:
-            result = self.supabase.table('entitlements').select(
-                'offer_id'
-            ).eq('user_id', user_id).in_(
-                'offer_id', offer_ids
-            ).in_('state', ['active', 'used']).execute()
+            rows = fetch_all(
+                "SELECT offer_id FROM entitlements WHERE user_id = %s AND offer_id = ANY(%s) AND state IN ('active', 'used')",
+                (str(user_id), offer_ids)
+            )
 
-            for row in (result.data or []):
-                oid = row.get('offer_id')
+            for row in rows:
+                oid = str(row.get('offer_id'))
                 if oid in counts:
                     counts[oid] += 1
         except Exception as e:

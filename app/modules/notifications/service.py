@@ -1,11 +1,12 @@
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
 
 import httpx
 
-from app.core.database import get_supabase_client
+from app.core.database import fetch_one, fetch_all, execute
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -23,25 +24,16 @@ def _is_expo_token(value: str) -> bool:
 
 
 class NotificationService:
-    def __init__(self):
-        self.supabase = get_supabase_client()
-
-    def _require_database(self):
-        if not self.supabase:
-            raise RuntimeError("Database connection unavailable")
-        return self.supabase
-
     def get_tokens(self, user_ids: Optional[list[str]] = None) -> list[dict]:
-        query = (
-            self._require_database()
-            .table("user_push_tokens")
-            .select("id,user_id,push_token,platform")
-        )
         if user_ids:
-            query = query.in_("user_id", user_ids)
-        response = query.execute()
+            rows = fetch_all(
+                "SELECT id, user_id, push_token, platform FROM user_push_tokens WHERE user_id = ANY(%s)",
+                (user_ids,)
+            )
+        else:
+            rows = fetch_all("SELECT id, user_id, push_token, platform FROM user_push_tokens")
         unique: Dict[str, dict] = {}
-        for row in response.data or []:
+        for row in rows:
             token = str(row.get("push_token") or "")
             if _is_expo_token(token):
                 unique[token] = row
@@ -98,9 +90,7 @@ class NotificationService:
                     failed += len(batch) - len(tickets)
 
         if invalid_tokens:
-            self._require_database().table("user_push_tokens").delete().in_(
-                "push_token", invalid_tokens
-            ).execute()
+            execute("DELETE FROM user_push_tokens WHERE push_token = ANY(%s)", (invalid_tokens,))
 
         event_data = {
             "title": title,
@@ -114,26 +104,21 @@ class NotificationService:
             "data": data or {},
         }
         if log_event:
-            self._require_database().table("analytics_events").insert(
-                {"event_type": "admin_push_notification", "event_data": event_data}
-            ).execute()
+            execute(
+                "INSERT INTO analytics_events (event_type, event_data) VALUES (%s, %s::jsonb)",
+                ("admin_push_notification", json.dumps(event_data))
+            )
         return event_data
 
     async def process_scheduled_campaigns(
         self, now: Optional[datetime] = None
     ) -> int:
         now = now or datetime.now(timezone.utc)
-        response = (
-            self._require_database()
-            .table("analytics_events")
-            .select("id,event_data,created_at")
-            .eq("event_type", "scheduled_push_notification")
-            .order("created_at")
-            .limit(100)
-            .execute()
+        rows = fetch_all(
+            "SELECT id, event_data, created_at FROM analytics_events WHERE event_type = 'scheduled_push_notification' ORDER BY created_at LIMIT 100"
         )
         processed = 0
-        for row in response.data or []:
+        for row in rows:
             event_data = dict(row.get("event_data") or {})
             if event_data.get("status") != "scheduled":
                 continue
@@ -149,9 +134,10 @@ class NotificationService:
                 continue
 
             event_data["status"] = "processing"
-            self._require_database().table("analytics_events").update(
-                {"event_data": event_data}
-            ).eq("id", row["id"]).execute()
+            execute(
+                "UPDATE analytics_events SET event_data = %s::jsonb WHERE id = %s",
+                (json.dumps(event_data), row["id"])
+            )
             try:
                 result = await self.send_campaign(
                     title=str(event_data.get("title") or ""),
@@ -182,22 +168,17 @@ class NotificationService:
                 event_data.update(
                     {"status": "failed", "failed_at": now.isoformat()}
                 )
-            self._require_database().table("analytics_events").update(
-                {"event_data": event_data}
-            ).eq("id", row["id"]).execute()
+            execute(
+                "UPDATE analytics_events SET event_data = %s::jsonb WHERE id = %s",
+                (json.dumps(event_data), row["id"])
+            )
         return processed
 
     def history(self, limit: int = 50) -> list[dict]:
-        response = (
-            self._require_database()
-            .table("analytics_events")
-            .select("id,event_data,created_at")
-            .in_("event_type", ["admin_push_notification", "scheduled_push_notification"])
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
+        return fetch_all(
+            "SELECT id, event_data, created_at FROM analytics_events WHERE event_type IN ('admin_push_notification', 'scheduled_push_notification') ORDER BY created_at DESC LIMIT %s",
+            (limit,)
         )
-        return response.data or []
 
 
 notification_service = NotificationService()

@@ -21,7 +21,7 @@ os.environ.setdefault("PASSLIB_BUILTIN_BCRYPT", "enabled")
 
 from passlib.hash import bcrypt as bcrypt_hasher # pyright: ignore
 
-from app.core.database import get_supabase_client
+from app.core.database import fetch_one, fetch_all, execute
 from app.core.redis import redis_manager
 from app.modules.merchant.schemas import (
     MerchantValidateResponse,
@@ -46,7 +46,6 @@ class MerchantService:
     
     def __init__(self):
         """Initialize service"""
-        self.supabase = get_supabase_client()
         self.redis = redis_manager
 
     # ================================
@@ -198,10 +197,10 @@ class MerchantService:
 
 
             # Mark entitlement as PENDING_CONFIRMATION so concurrent scans are rejected
-            self.supabase.table('entitlements').update({
-                'state': EntitlementState.PENDING_CONFIRMATION.value,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }).eq('id', str(entitlement_id)).execute()
+            execute(
+                "UPDATE entitlements SET state = %s, updated_at = %s WHERE id = %s",
+                (EntitlementState.PENDING_CONFIRMATION.value, datetime.now(timezone.utc).isoformat(), str(entitlement_id))
+            )
 
             # Return PASS with details
             return MerchantValidateResponse(
@@ -259,7 +258,7 @@ class MerchantService:
             ValueError: If validation fails
         """
         # Get token data from Redis
-        session_merchant_id = await self._get_session_merchant(session_token)
+        session_merchant_id = self._get_session_merchant(session_token)
         if len(code) <= 6:
             redis_key = f"{REDIS_PREFIX_BACKUP_CODE}{code.upper()}"
         else:
@@ -340,18 +339,19 @@ class MerchantService:
             'is_voided': False
         }
         
-        result = self.supabase.table('redemptions').insert(redemption_data).execute()
+        keys = list(redemption_data.keys())
+        col_str = ", ".join(keys)
+        val_str = ", ".join(["%s"] * len(keys))
+        redemption = fetch_one(f"INSERT INTO redemptions ({col_str}) VALUES ({val_str}) RETURNING *", tuple(redemption_data.values()))
         
-        if not result.data:
+        if not redemption:
             raise ValueError("Failed to create redemption")
         
-        redemption = result.data[0]
-        
         # Mark entitlement as CONFIRMED
-        self.supabase.table('entitlements').update({
-            'state': EntitlementState.CONFIRMED.value,
-            'used_at': datetime.now(timezone.utc).isoformat()
-        }).eq('id', str(entitlement_id)).execute()
+        execute(
+            "UPDATE entitlements SET state = %s, used_at = %s WHERE id = %s",
+            (EntitlementState.CONFIRMED.value, datetime.now(timezone.utc).isoformat(), str(entitlement_id))
+        )
         
         # Delete BOTH QR token and backup code from Redis
         proof_tok = token_data.get('proof_token') or (code if len(code) > 6 else None)
@@ -430,17 +430,16 @@ class MerchantService:
             raise ValueError("Voiding only allowed on same day of redemption")
         
         # Mark redemption as voided
-        self.supabase.table('redemptions').update({
-            'is_voided': True,
-            'voided_at': now.isoformat(),
-            'void_reason': reason
-        }).eq('id', str(redemption_id)).execute()
+        execute(
+            "UPDATE redemptions SET is_voided = true, voided_at = %s, void_reason = %s WHERE id = %s",
+            (now.isoformat(), reason, str(redemption_id))
+        )
         
-        # Restore entitlement to ACTIVE (if same day)
-        self.supabase.table('entitlements').update({
-            'state': EntitlementState.CANCELLED.value,
-            'voided_at': now.isoformat()
-        }).eq('id', str(redemption['entitlement_id'])).execute()
+        # Restore entitlement to CANCELLED
+        execute(
+            "UPDATE entitlements SET state = %s, voided_at = %s WHERE id = %s",
+            (EntitlementState.CANCELLED.value, now.isoformat(), str(redemption['entitlement_id']))
+        )
         
         # Log analytics
         self._log_analytics_event('redemption_voided', {
@@ -461,36 +460,30 @@ class MerchantService:
     
     def _get_entitlement(self, entitlement_id: str) -> Optional[Dict]:
         """Get entitlement by ID"""
-        result = self.supabase.table('entitlements').select('*').eq('id', entitlement_id).execute()
-        return result.data[0] if result.data else None
+        return fetch_one("SELECT * FROM entitlements WHERE id = %s", (str(entitlement_id),))
     
     def _get_offer(self, offer_id: str) -> Optional[Dict]:
         """Get offer by ID"""
-        result = self.supabase.table('offers').select('*').eq('id', offer_id).execute()
-        return result.data[0] if result.data else None
+        return fetch_one("SELECT * FROM offers WHERE id = %s", (str(offer_id),))
     
     def _get_merchant(self, merchant_id: str) -> Optional[Dict]:
         """Get merchant by ID"""
-        result = self.supabase.table('merchants').select('*').eq('id', merchant_id).execute()
-        return result.data[0] if result.data else None
+        return fetch_one("SELECT * FROM merchants WHERE id = %s", (str(merchant_id),))
     
     def _get_user(self, user_id: str) -> Optional[Dict]:
         """Get user profile"""
         try:
-            result = self.supabase.table('users').select('first_name, last_name, name').eq('id', user_id).execute()
-            if result.data:
-                u = result.data[0]
-                # Build display name from available fields
+            u = fetch_one("SELECT first_name, last_name, name FROM users WHERE id = %s", (str(user_id),))
+            if u:
                 full_name = u.get('name') or ' '.join(filter(None, [u.get('first_name'), u.get('last_name')])) or 'Student'
                 return {'full_name': full_name}
             return None
-        except:
+        except Exception:
             return None
     
     def _get_redemption(self, redemption_id: UUID) -> Optional[Dict]:
         """Get redemption by ID"""
-        result = self.supabase.table('redemptions').select('*').eq('id', str(redemption_id)).execute()
-        return result.data[0] if result.data else None
+        return fetch_one("SELECT * FROM redemptions WHERE id = %s", (str(redemption_id),))
 
 
     def _verify_merchant_pin(self, merchant_id: str, pin: str) -> bool:
@@ -530,9 +523,7 @@ class MerchantService:
     def _upgrade_merchant_pin_hash(self, merchant_id: str, new_hash: str) -> None:
         """Upgrade merchant's PIN hash to bcrypt."""
         try:
-            self.supabase.table("merchants").update({
-                "pin_hash": new_hash
-            }).eq("id", merchant_id).execute()
+            execute("UPDATE merchants SET pin_hash = %s WHERE id = %s", (new_hash, str(merchant_id)))
         except Exception as e:
             logger.error(f"Failed to upgrade PIN hash for merchant {merchant_id}: {e}")   
 
@@ -596,11 +587,10 @@ class MerchantService:
     def _log_analytics_event(self, event_type: str, event_data: Dict):
         """Log analytics event"""
         try:
-            self.supabase.table('analytics_events').insert({
-                'event_type': event_type,
-                'event_data': event_data,
-                'created_at': datetime.now(timezone.utc).isoformat()
-            }).execute()
+            execute(
+                "INSERT INTO analytics_events (event_type, event_data, created_at) VALUES (%s, %s::jsonb, %s)",
+                (event_type, json.dumps(event_data), datetime.now(timezone.utc).isoformat())
+            )
         except Exception as e:
             logger.warning(f"Failed to log analytics event: {e}")
 

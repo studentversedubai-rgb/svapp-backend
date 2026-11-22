@@ -20,7 +20,7 @@ from uuid import UUID
 
 from postmarker.core import PostmarkClient
 
-from app.core.database import get_supabase_client
+from app.core.database import fetch_one, fetch_all, execute
 from app.core.activity import log_activity_event
 from app.modules.payments.schemas import (
     CreateMockOrderRequest,
@@ -72,9 +72,6 @@ def sanitize_csv_field(value) -> str:
 
 class PaymentService:
     """Handles mock payment order creation, email notifications, and CSV export"""
-
-    def __init__(self):
-        self.supabase = get_supabase_client()
 
     # ================================
     # CREATE MOCK ORDER
@@ -141,14 +138,13 @@ class PaymentService:
             "status": "paid",
         }
 
-        insert_result = (
-            self.supabase.table("ticket_records").insert(record_data).execute()
-        )
+        keys = list(record_data.keys())
+        col_str = ", ".join(keys)
+        val_str = ", ".join(["%s"] * len(keys))
+        record = fetch_one(f"INSERT INTO ticket_records ({col_str}) VALUES ({val_str}) RETURNING *", tuple(record_data.values()))
 
-        if not insert_result.data:
+        if not record:
             raise Exception("Failed to create ticket record in database")
-
-        record = insert_result.data[0]
 
         # 5. Send emails — failures are logged but never crash the response
         # (record is already saved at this point)
@@ -186,27 +182,26 @@ class PaymentService:
         Returns:
             CSV string ready to stream.
         """
-        query = (
-            self.supabase.table("ticket_records")
-            .select("*, ticket:tickets(merchant_name, ticket_details)")
-            .order("created_at", desc=True)
-        )
-
+        sql = """
+            SELECT tr.*, t.merchant_name, t.ticket_details
+            FROM ticket_records tr
+            LEFT JOIN tickets t ON t.id = tr.ticket_id
+            WHERE 1=1
+        """
+        params = []
         if from_date:
-            query = query.gte("created_at", f"{from_date}T00:00:00+00:00")
+            sql += " AND tr.created_at >= %s"
+            params.append(f"{from_date}T00:00:00+00:00")
         if to_date:
-            query = query.lte("created_at", f"{to_date}T23:59:59+00:00")
+            sql += " AND tr.created_at <= %s"
+            params.append(f"{to_date}T23:59:59+00:00")
 
-        result = query.execute()
-        rows = result.data or []
+        sql += " ORDER BY tr.created_at DESC"
+        rows = fetch_all(sql, tuple(params))
 
-        # Flatten joined ticket data
         for row in rows:
-            ticket_join = row.pop("ticket", None) or {}
-            if isinstance(ticket_join, list):
-                ticket_join = ticket_join[0] if ticket_join else {}
-            row["merchant_name"] = ticket_join.get("merchant_name", "")
-            row["ticket_type"] = ticket_join.get("ticket_details", "")
+            row["merchant_name"] = row.get("merchant_name", "")
+            row["ticket_type"] = row.get("ticket_details", "")
 
         # Build CSV
         columns = [
@@ -273,17 +268,10 @@ class PaymentService:
         """
         from datetime import date
 
-        result = (
-            self.supabase.table("tickets")
-            .select("*")
-            .eq("id", str(ticket_id))
-            .execute()
-        )
+        ticket = fetch_one("SELECT * FROM tickets WHERE id = %s", (str(ticket_id),))
 
-        if not result.data:
+        if not ticket:
             raise ValueError("Ticket not found")
-
-        ticket = result.data[0]
 
         if not ticket.get("is_active", False):
             raise ValueError("Ticket is not currently active")
@@ -594,21 +582,21 @@ StudentVerse Team"""
         amount_in_fils = int(float(ticket["our_price"]) * payload.quantity * 100)
         
         # Get or create customer
-        user_result = self.supabase.table("users").select("stripe_customer_id").eq("id", user_id).execute()
-        if not user_result.data:
+        user_result = fetch_one("SELECT stripe_customer_id FROM users WHERE id = %s", (str(user_id),))
+        if not user_result:
             raise ValueError("User not found")
             
-        stripe_customer_id = user_result.data[0].get("stripe_customer_id")
+        stripe_customer_id = user_result.get("stripe_customer_id")
         
         if stripe_customer_id:
             try:
                 customer = stripe.Customer.retrieve(stripe_customer_id)
             except Exception:
                 customer = stripe.Customer.create(email=user_email, metadata={"user_id": str(user_id)})
-                self.supabase.table("users").update({"stripe_customer_id": customer.id}).eq("id", user_id).execute()
+                execute("UPDATE users SET stripe_customer_id = %s WHERE id = %s", (customer.id, str(user_id)))
         else:
             customer = stripe.Customer.create(email=user_email, metadata={"user_id": str(user_id)})
-            self.supabase.table("users").update({"stripe_customer_id": customer.id}).eq("id", user_id).execute()
+            execute("UPDATE users SET stripe_customer_id = %s WHERE id = %s", (customer.id, str(user_id)))
             
         ephemeral_key = stripe.EphemeralKey.create(
             customer=customer.id,
@@ -657,8 +645,10 @@ StudentVerse Team"""
             "payment_status": "pending",
         }
         
-        insert_result = self.supabase.table("ticket_records").insert(record_data).execute()
-        record = insert_result.data[0]
+        keys = list(record_data.keys())
+        col_str = ", ".join(keys)
+        val_str = ", ".join(["%s"] * len(keys))
+        record = fetch_one(f"INSERT INTO ticket_records ({col_str}) VALUES ({val_str}) RETURNING *", tuple(record_data.values()))
         
         stripe.PaymentIntent.modify(
             payment_intent.id,
@@ -688,11 +678,16 @@ StudentVerse Team"""
         
         stripe.api_key = settings.STRIPE_SECRET_KEY
         
-        record_result = self.supabase.table("ticket_records").select("*, ticket:tickets(merchant_name, ticket_details)").eq("id", str(payload.record_id)).execute()
-        if not record_result.data:
+        sql = """
+            SELECT tr.*, t.merchant_name, t.ticket_details
+            FROM ticket_records tr
+            LEFT JOIN tickets t ON t.id = tr.ticket_id
+            WHERE tr.id = %s
+        """
+        record = fetch_one(sql, (str(payload.record_id),))
+        if not record:
             raise HTTPException(404, "Record not found")
             
-        record = record_result.data[0]
         if record["user_id"] != user_id:
             raise HTTPException(400, "Record does not belong to user")
             
@@ -711,13 +706,10 @@ StudentVerse Team"""
         if payment_intent.metadata.to_dict().get("record_id") != str(payload.record_id):
             raise HTTPException(400, "PaymentIntent does not match this booking")
             
-        self.supabase.table("ticket_records").update({"payment_status": "confirmed"}).eq("id", str(payload.record_id)).execute()
+        execute("UPDATE ticket_records SET payment_status = 'confirmed' WHERE id = %s", (str(payload.record_id),))
 
-        ticket_join = record.get("ticket", {})
-        if isinstance(ticket_join, list):
-            ticket_join = ticket_join[0] if ticket_join else {}
-        merchant_name = ticket_join.get("merchant_name", "Unknown Merchant")
-        ticket_details = ticket_join.get("ticket_details", "")
+        merchant_name = record.get("merchant_name") or "Unknown Merchant"
+        ticket_details = record.get("ticket_details") or ""
 
         # Realtime user activity feed
         log_activity_event(
@@ -767,17 +759,16 @@ StudentVerse Team"""
             record_id = payment_intent.get("metadata", {}).get("record_id")
             
             if record_id:
-                record_result = self.supabase.table("ticket_records").select("*, ticket:tickets(merchant_name, ticket_details)").eq("id", record_id).execute()
-                if record_result.data:
-                    record = record_result.data[0]
+                record = fetch_one(
+                    "SELECT tr.*, t.merchant_name, t.ticket_details FROM ticket_records tr LEFT JOIN tickets t ON t.id = tr.ticket_id WHERE tr.id = %s",
+                    (str(record_id),)
+                )
+                if record:
                     if record.get("payment_status") != "confirmed":
-                        self.supabase.table("ticket_records").update({"payment_status": "confirmed"}).eq("id", record_id).execute()
+                        execute("UPDATE ticket_records SET payment_status = 'confirmed' WHERE id = %s", (str(record_id),))
 
-                        ticket_join = record.get("ticket", {})
-                        if isinstance(ticket_join, list):
-                            ticket_join = ticket_join[0] if ticket_join else {}
-                        merchant_name = ticket_join.get("merchant_name", "Unknown Merchant")
-                        ticket_details = ticket_join.get("ticket_details", "")
+                        merchant_name = record.get("merchant_name") or "Unknown Merchant"
+                        ticket_details = record.get("ticket_details") or ""
 
                         # Realtime user activity feed
                         if record.get("user_id"):
@@ -805,10 +796,9 @@ StudentVerse Team"""
             record_id = payment_intent.get("metadata", {}).get("record_id")
             
             if record_id:
-                record_result = self.supabase.table("ticket_records").select("*").eq("id", record_id).execute()
-                if record_result.data:
-                    record = record_result.data[0]
+                record = fetch_one("SELECT * FROM ticket_records WHERE id = %s", (str(record_id),))
+                if record:
                     if record.get("payment_status") == "pending":
-                        self.supabase.table("ticket_records").update({"payment_status": "failed"}).eq("id", record_id).execute()
+                        execute("UPDATE ticket_records SET payment_status = 'failed' WHERE id = %s", (str(record_id),))
                         
         return {"status": "ok"}

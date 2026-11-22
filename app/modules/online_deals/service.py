@@ -9,17 +9,14 @@ import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-from app.core.database import get_supabase_client
+from app.core.database import fetch_one, fetch_all, execute, fetch_val
 
 logger = logging.getLogger(__name__)
 
 
 class OnlineDealService:
     """Service for online deals operations"""
-    
-    def __init__(self):
-        self.supabase = get_supabase_client()
-    
+
     async def get_online_deals(
         self,
         page: int = 1,
@@ -38,32 +35,34 @@ class OnlineDealService:
             Dictionary with paginated online deals including merchant data
         """
         try:
-            # Build query with merchant join
-            # Note: Supabase doesn't support proper joins in the Python client
-            # So we fetch online deals first, then fetch merchants separately
-            query = (
-                self.supabase.table('online_deals')
-                .select('*, merchants!inner(*)', count='exact')
-                .eq('is_active', True)
-                .order('is_featured', desc=True)
-                .order('created_at', desc=True)
-            )
-            
-            # Apply category filter
-            if category:
-                query = query.ilike('category', f'%{category}%')
-            
-            # Calculate pagination
             from_offset = (page - 1) * page_size
-            query = query.range(from_offset, from_offset + page_size - 1)
-            
-            # Execute query
-            response = query.execute()
-            
-            items = response.data
-            total = response.count or 0
+            if category:
+                sql = """
+                    SELECT od.*, row_to_json(m.*) as merchants
+                    FROM online_deals od
+                    INNER JOIN merchants m ON m.id = od.merchant_id
+                    WHERE od.is_active = true AND od.category ILIKE %s
+                    ORDER BY od.is_featured DESC, od.created_at DESC
+                    LIMIT %s OFFSET %s
+                """
+                count_sql = "SELECT COUNT(*) FROM online_deals WHERE is_active = true AND category ILIKE %s"
+                items = fetch_all(sql, (f"%{category}%", page_size, from_offset))
+                total = fetch_val(count_sql, (f"%{category}%",)) or 0
+            else:
+                sql = """
+                    SELECT od.*, row_to_json(m.*) as merchants
+                    FROM online_deals od
+                    INNER JOIN merchants m ON m.id = od.merchant_id
+                    WHERE od.is_active = true
+                    ORDER BY od.is_featured DESC, od.created_at DESC
+                    LIMIT %s OFFSET %s
+                """
+                count_sql = "SELECT COUNT(*) FROM online_deals WHERE is_active = true"
+                items = fetch_all(sql, (page_size, from_offset))
+                total = fetch_val(count_sql) or 0
+
             total_pages = math.ceil(total / page_size) if total > 0 else 0
-            
+
             return {
                 'items': items,
                 'total': total,
@@ -71,11 +70,11 @@ class OnlineDealService:
                 'page_size': page_size,
                 'total_pages': total_pages
             }
-            
+
         except Exception as e:
             logger.error(f"Error in get_online_deals: {e}")
             raise
-    
+
     async def get_online_deal_by_id(self, deal_id: str) -> Optional[Dict[str, Any]]:
         """
         Get a single online deal by ID.
@@ -87,23 +86,18 @@ class OnlineDealService:
             Online deal data or None if not found
         """
         try:
-            response = (
-                self.supabase.table('online_deals')
-                .select('*, merchants(*)')
-                .eq('id', deal_id)
-                .eq('is_active', True)
-                .execute()
-            )
-            
-            if not response.data:
-                return None
-            
-            return response.data[0]
-            
+            sql = """
+                SELECT od.*, row_to_json(m.*) as merchants
+                FROM online_deals od
+                LEFT JOIN merchants m ON m.id = od.merchant_id
+                WHERE od.id = %s AND od.is_active = true
+            """
+            return fetch_one(sql, (deal_id,))
+
         except Exception as e:
             logger.error(f"Error in get_online_deal_by_id: {e}")
             raise
-    
+
     async def create_online_deal(
         self,
         deal_data: Dict[str, Any]
@@ -118,36 +112,27 @@ class OnlineDealService:
             Created online deal
         """
         try:
-            # Validate discount_code for discount_code type
             if deal_data.get('type') == 'discount_code' and not deal_data.get('discount_code'):
                 raise ValueError("discount_code is required for discount_code type deals")
-            
+
             if deal_data.get('type') == 'affiliate_link':
-                # Clear discount_code for affiliate links
                 deal_data['discount_code'] = None
-            
-            insert_response = (
-                self.supabase.table('online_deals')
-                .insert(deal_data)
-                .execute()
-            )
-            
-            created_id = insert_response.data[0]['id']
-            
-            # Fetch with merchant data
-            response = (
-                self.supabase.table('online_deals')
-                .select('*, merchants(*)')
-                .eq('id', created_id)
-                .execute()
-            )
-            
-            return response.data[0]
-            
+
+            keys = list(deal_data.keys())
+            col_str = ", ".join(keys)
+            val_str = ", ".join(["%s"] * len(keys))
+            insert_sql = f"INSERT INTO online_deals ({col_str}) VALUES ({val_str}) RETURNING id"
+            result = fetch_one(insert_sql, tuple(deal_data.values()))
+            if not result:
+                raise ValueError("Failed to create online deal")
+            created_id = result['id']
+
+            return await self.get_online_deal_by_id(str(created_id))
+
         except Exception as e:
             logger.error(f"Error in create_online_deal: {e}")
             raise
-    
+
     async def update_online_deal(
         self,
         deal_id: str,
@@ -164,33 +149,21 @@ class OnlineDealService:
             Updated online deal or None if not found
         """
         try:
-            # Add updated_at timestamp
             deal_data['updated_at'] = datetime.utcnow().isoformat()
-            
-            update_response = (
-                self.supabase.table('online_deals')
-                .update(deal_data)
-                .eq('id', deal_id)
-                .execute()
-            )
-            
-            if not update_response.data:
+            set_clauses = [f"{k} = %s" for k in deal_data.keys()]
+            update_sql = f"UPDATE online_deals SET {', '.join(set_clauses)} WHERE id = %s"
+            params = list(deal_data.values()) + [deal_id]
+            rowcount = execute(update_sql, tuple(params))
+
+            if rowcount == 0:
                 return None
-            
-            # Fetch with merchant data
-            response = (
-                self.supabase.table('online_deals')
-                .select('*, merchants(*)')
-                .eq('id', deal_id)
-                .execute()
-            )
-            
-            return response.data[0] if response.data else None
-            
+
+            return await self.get_online_deal_by_id(deal_id)
+
         except Exception as e:
             logger.error(f"Error in update_online_deal: {e}")
             raise
-    
+
     async def delete_online_deal(self, deal_id: str) -> bool:
         """
         Soft delete an online deal by setting is_active=False (Admin only).
@@ -202,18 +175,12 @@ class OnlineDealService:
             True if successful
         """
         try:
-            response = (
-                self.supabase.table('online_deals')
-                .update({
-                    'is_active': False,
-                    'updated_at': datetime.utcnow().isoformat()
-                })
-                .eq('id', deal_id)
-                .execute()
+            execute(
+                "UPDATE online_deals SET is_active = false, updated_at = %s WHERE id = %s",
+                (datetime.utcnow().isoformat(), deal_id)
             )
-            
             return True
-            
+
         except Exception as e:
             logger.error(f"Error in delete_online_deal: {e}")
             raise

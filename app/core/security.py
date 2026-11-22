@@ -1,14 +1,18 @@
 """
 Security Module
 
-Handles JWT verification with Supabase Auth.
+Handles JWT verification using python-jose (custom JWT, no Supabase Auth).
 """
 
 import logging
 from typing import Optional, Dict
+
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from app.core.database import get_supabase_client
+from jose import JWTError, jwt
+
+from app.core.database import fetch_one, execute
+from app.core.config import get_settings
 from app.core.activity import touch_last_active
 
 
@@ -18,123 +22,123 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer()
 
 
-def _resolve_token_user(supabase, token: str) -> Dict[str, str]:
+def _resolve_token_user(token: str) -> Dict[str, str]:
+    """
+    Decode a JWT and return {"sub": user_id, "email": email}.
+
+    Raises HTTPException 401 on any JWTError or missing sub.
+    """
+    settings = get_settings()
     try:
-        response = supabase.auth.get_user(token)
-    except Exception as exc:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except JWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
-    auth_user = getattr(response, "user", None)
-    user_id = getattr(auth_user, "id", None)
+
+    user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token payload",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return {"sub": str(user_id), "email": getattr(auth_user, "email", None)}
+
+    return {"sub": str(user_id), "email": payload.get("email")}
 
 
 async def get_current_user(
     request: Request,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> Dict:
     """
-    Dependency to get current authenticated user from JWT
-    
-    Validates JWT with Supabase and fetches user from public.users
-    
-    Also enforces device binding security if X-Device-ID header is present or required.
-    
+    Dependency to get current authenticated user from JWT.
+
+    Validates JWT with python-jose and fetches user from public.users.
+
+    Also enforces device binding security if X-Device-ID header is present.
+
     Args:
-        credentials: HTTP Authorization header with Bearer token
-        
+        request: Incoming HTTP request (used for device-id header + state).
+        credentials: HTTP Authorization header with Bearer token.
+
     Returns:
         User dict with id, email, name, etc.
-        
+
     Raises:
-        HTTPException: 401 if authentication fails
-        HTTPException: 403 if device mismatch
+        HTTPException: 401 if authentication fails.
+        HTTPException: 403 if device mismatch or account not approved.
+        HTTPException: 404 if user profile not found.
+        HTTPException: 500 on internal errors.
     """
-    supabase = get_supabase_client()
-    if not supabase:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database connection error"
-        )
-    
     token = credentials.credentials
 
     try:
-        payload = _resolve_token_user(supabase, token)
+        payload = _resolve_token_user(token)
         user_id = payload["sub"]
 
-        # 2. Fetch user details from public.users
+        # Fetch user details from public.users
         try:
-            user_result = supabase.table("users").select("*").eq("id", user_id).execute()
+            user = await fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
 
-       
-        
-       
-            
-            if not user_result.data:
+            if not user:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="User profile not found"
+                    detail="User profile not found",
                 )
-            
-            user = user_result.data[0]
+
             verification_status = user.get("verification_status")
             if verification_status and verification_status != "approved":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail={
-                        "code": "ACCOUNT_PENDING_REVIEW" if verification_status == "pending_review" else "ACCOUNT_REJECTED",
+                        "code": (
+                            "ACCOUNT_PENDING_REVIEW"
+                            if verification_status == "pending_review"
+                            else "ACCOUNT_REJECTED"
+                        ),
                         "message": "Your account is not approved for app access yet.",
                         "verification_status": verification_status,
                         "review_reason": user.get("verification_rejection_reason"),
-                    }
+                    },
                 )
-            
+
             # --- Device Security Check ---
             device_id_header = request.headers.get("X-Device-ID")
             stored_device_id = user.get("device_id")
-            
+
             if device_id_header:
                 if stored_device_id:
-                    # Case 1: Use has a stored device ID. Check mismatch.
+                    # Case 1: User has a stored device ID — check for mismatch.
                     if stored_device_id != device_id_header:
-                        logger.warning(f"Device mismatch for user {user_id}. Stored: {stored_device_id}, Header: {device_id_header}")
+                        logger.warning(
+                            f"Device mismatch for user {user_id}. "
+                            f"Stored: {stored_device_id}, Header: {device_id_header}"
+                        )
                         raise HTTPException(
                             status_code=status.HTTP_403_FORBIDDEN,
-                            detail="Device mismatch. Single device login enforced."
+                            detail="Device mismatch. Single device login enforced.",
                         )
                 else:
-                    # Case 2: User has NO stored device ID. Bind this device.
+                    # Case 2: User has NO stored device ID — bind this device.
                     logger.info(f"Binding first device {device_id_header} to user {user_id}")
                     try:
-                        supabase.table("users").update({"device_id": device_id_header}).eq("id", user_id).execute()
-                        user["device_id"] = device_id_header # Update local object
+                        await execute(
+                            "UPDATE users SET device_id = %s WHERE id = %s",
+                            (device_id_header, user_id),
+                        )
+                        user["device_id"] = device_id_header  # Update local object
                     except Exception as e:
                         logger.error(f"Failed to bind device: {e}")
-                        # Non-critical failure logic? Or block?
-                        # Requirement: "Allow first-time device_id assignment if null"
-                        # We proceed, hopefully it updates next time or we treat this as a transient error.
-                        pass
-            
-            # If no header is provided, we currently allow access unless strict mode.
-            # Requirement: "Add device_id check... When user makes authenticated request, verify device_id matches"
-            # If no header, we can't verify. For strict security, we'd require header.
-            # But during migration or testing, maybe allow?
-            # Decision: Allow access if no header, but log warning.
-            # Or enforce it? "If mismatch: return 403". "Allow first-time...".
-            # I'll allow access without header for flexibility, but enforce if header is present.
+                        # Non-critical — allow access, retry on next request.
 
-            # Heartbeat: bump last_active_at (throttled to 30s) so the dashboard
-            # Realtime Users page can show who is currently active. Best-effort.
+            # Heartbeat: bump last_active_at (throttled to 30 s).
             app_version = getattr(getattr(request, "state", None), "app_version", None)
             touch_last_active(
                 user_id,
@@ -143,16 +147,16 @@ async def get_current_user(
             )
 
             return user
-            
+
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Failed to fetch user profile: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to retrieve user data"
+                detail="Failed to retrieve user data",
             )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -160,7 +164,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"}
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
 
@@ -170,7 +174,7 @@ async def get_optional_user(request: Request) -> Optional[Dict]:
     is supplied, otherwise None. Never raises for missing/invalid tokens.
 
     Used for read-only endpoints that should be accessible to guests but may
-    still want to personalize responses when a user IS signed in.
+    still want to personalise responses when a user IS signed in.
     """
     auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
     if not auth_header or not auth_header.lower().startswith("bearer "):
@@ -180,22 +184,17 @@ async def get_optional_user(request: Request) -> Optional[Dict]:
     if not token:
         return None
 
-    supabase = get_supabase_client()
-    if not supabase:
-        return None
-
     try:
         try:
-            payload = _resolve_token_user(supabase, token)
+            payload = _resolve_token_user(token)
             user_id = payload["sub"]
         except HTTPException:
             return None
 
-        user_result = supabase.table("users").select("*").eq("id", user_id).execute()
-        if not user_result.data:
+        user = await fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
+        if not user:
             return None
 
-        user = user_result.data[0]
         verification_status = user.get("verification_status")
         if verification_status and verification_status != "approved":
             return None
@@ -207,33 +206,26 @@ async def get_optional_user(request: Request) -> Optional[Dict]:
 
 
 async def get_current_user_no_device_check(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> Dict:
     """
-    Lightweight auth dependency that validates JWT only (no device check).
+    Lightweight auth dependency that validates the JWT only (no device check).
     Used for /register where the device_id is being SET for the first time.
     """
-    supabase = get_supabase_client()
-    if not supabase:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database connection error"
-        )
-    
     token = credentials.credentials
 
     try:
-        payload = _resolve_token_user(supabase, token)
+        payload = _resolve_token_user(token)
         user_id = payload["sub"]
 
-        user_result = supabase.table("users").select("*").eq("id", user_id).execute()
-        
-        if not user_result.data:
-            # User exists in Auth but not yet in public.users — return basic info
+        user = await fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
+
+        if not user:
+            # User exists in auth but not yet in public.users — return basic info.
             return {"id": str(user_id), "email": payload.get("email")}
-        
-        return user_result.data[0]
-        
+
+        return user
+
     except HTTPException:
         raise
     except Exception as e:
@@ -241,5 +233,5 @@ async def get_current_user_no_device_check(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"}
+            headers={"WWW-Authenticate": "Bearer"},
         )

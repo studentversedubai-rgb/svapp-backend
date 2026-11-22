@@ -232,14 +232,18 @@ async def refresh_token(request_body: RefreshTokenRequest):
     without forcing the user to log in again.
     """
     try:
-        from app.core.database import create_fresh_supabase_client
-        client = create_fresh_supabase_client()
-        result = client.auth.refresh_session(request_body.refresh_token)
+        from app.core.jwt_utils import decode_access_token, create_access_token
+        payload = decode_access_token(request_body.refresh_token)
+        user_id = payload.get("sub")
+        email = payload.get("email")
+        if not user_id:
+            raise ValueError("Invalid refresh token")
+        new_token = create_access_token(user_id, email or "")
         return {
             "ok": True,
             "data": {
-                "access_token": result.session.access_token,
-                "refresh_token": result.session.refresh_token,
+                "access_token": new_token,
+                "refresh_token": request_body.refresh_token,
                 "token_type": "bearer",
             }
         }

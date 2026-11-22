@@ -1,7 +1,7 @@
 """
 Tickets Service
 
-Business logic for fetching tickets and ticket records from Supabase.
+Business logic for fetching tickets and ticket records from PostgreSQL.
 """
 
 import logging
@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
-from app.core.database import get_supabase_client
+from app.core.database import fetch_one, fetch_all, execute
 from app.modules.tickets.schemas import (
     TicketResponse,
     TicketListResponse,
@@ -23,9 +23,6 @@ logger = logging.getLogger(__name__)
 
 class TicketService:
     """Handles ticket browse and record retrieval operations"""
-
-    def __init__(self):
-        self.supabase = get_supabase_client()
 
     # ================================
     # PUBLIC: LIST TICKETS
@@ -47,27 +44,22 @@ class TicketService:
         try:
             today = date.today().isoformat()
 
-            query = (
-                self.supabase.table("tickets")
-                .select("*")
-                .eq("is_active", True)
-                .lte("pricing_period_start", today)
-                .gte("pricing_period_end", today)
-            )
+            sql = """
+                SELECT * FROM tickets
+                WHERE is_active = true
+                  AND pricing_period_start <= %s
+                  AND pricing_period_end >= %s
+            """
+            params = [today, today]
 
             if merchant_name:
-                # Escape LIKE wildcard special characters (\, %, _)
-                safe_name = (
-                    merchant_name
-                    .replace("\\", "\\\\")
-                    .replace("%", "\\%")
-                    .replace("_", "\\_")
-                )
-                query = query.ilike("merchant_name", f"%{safe_name}%")
+                sql += " AND merchant_name ILIKE %s"
+                params.append(f"%{merchant_name}%")
 
-            result = query.execute()
+            sql += " ORDER BY created_at DESC"
+            rows = fetch_all(sql, tuple(params))
 
-            items = [TicketResponse(**row) for row in (result.data or [])]
+            items = [TicketResponse(**row) for row in rows]
             return TicketListResponse(items=items, total=len(items))
 
         except Exception as e:
@@ -92,17 +84,10 @@ class TicketService:
             ValueError: If ticket not found or not active.
         """
         try:
-            result = (
-                self.supabase.table("tickets")
-                .select("*")
-                .eq("id", str(ticket_id))
-                .execute()
-            )
+            ticket = fetch_one("SELECT * FROM tickets WHERE id = %s", (str(ticket_id),))
 
-            if not result.data:
+            if not ticket:
                 raise ValueError("Ticket not found")
-
-            ticket = result.data[0]
 
             if not ticket.get("is_active", False):
                 raise ValueError("Ticket is not currently available")
@@ -130,24 +115,15 @@ class TicketService:
             TicketRecordListResponse
         """
         try:
-            result = (
-                self.supabase.table("ticket_records")
-                .select("*, ticket:tickets(merchant_name, ticket_details)")
-                .eq("user_id", user_id)
-                .order("created_at", desc=True)
-                .execute()
-            )
-
-            items = []
-            for row in (result.data or []):
-                # Flatten joined ticket fields onto the record dict
-                ticket_join = row.pop("ticket", None) or {}
-                if isinstance(ticket_join, list):
-                    ticket_join = ticket_join[0] if ticket_join else {}
-                row["merchant_name"] = ticket_join.get("merchant_name")
-                row["ticket_details"] = ticket_join.get("ticket_details")
-                items.append(TicketRecordResponse(**row))
-
+            sql = """
+                SELECT tr.*, t.merchant_name, t.ticket_details
+                FROM ticket_records tr
+                LEFT JOIN tickets t ON t.id = tr.ticket_id
+                WHERE tr.user_id = %s
+                ORDER BY tr.created_at DESC
+            """
+            rows = fetch_all(sql, (user_id,))
+            items = [TicketRecordResponse(**row) for row in rows]
             return TicketRecordListResponse(items=items, total=len(items))
 
         except Exception as e:
@@ -189,7 +165,6 @@ class TicketService:
                 update_data["internal_notes"] = payload.internal_notes
 
             if payload.status == "fulfilled":
-                # Auto-set fulfilled_at to now() if caller didn't provide it
                 if payload.fulfilled_at is not None:
                     update_data["fulfilled_at"] = payload.fulfilled_at.isoformat()
                 else:
@@ -197,28 +172,24 @@ class TicketService:
             elif payload.fulfilled_at is not None:
                 update_data["fulfilled_at"] = payload.fulfilled_at.isoformat()
 
-            result = (
-                self.supabase.table("ticket_records")
-                .update(update_data)
-                .eq("id", str(record_id))
-                .execute()
-            )
+            set_clauses = [f"{k} = %s" for k in update_data.keys()]
+            params = list(update_data.values()) + [str(record_id)]
+            sql = f"UPDATE ticket_records SET {', '.join(set_clauses)} WHERE id = %s"
+            rowcount = execute(sql, tuple(params))
 
-            if not result.data:
+            if rowcount == 0:
                 raise ValueError("Ticket record not found")
 
-            row = result.data[0]
-
-            # Fetch joined ticket info to enrich response
-            ticket_result = (
-                self.supabase.table("tickets")
-                .select("merchant_name, ticket_details")
-                .eq("id", str(row["ticket_id"]))
-                .execute()
-            )
-            ticket_info = ticket_result.data[0] if ticket_result.data else {}
-            row["merchant_name"] = ticket_info.get("merchant_name")
-            row["ticket_details"] = ticket_info.get("ticket_details")
+            # Fetch enriched record
+            enriched_sql = """
+                SELECT tr.*, t.merchant_name, t.ticket_details
+                FROM ticket_records tr
+                LEFT JOIN tickets t ON t.id = tr.ticket_id
+                WHERE tr.id = %s
+            """
+            row = fetch_one(enriched_sql, (str(record_id),))
+            if not row:
+                raise ValueError("Ticket record not found")
 
             return TicketRecordResponse(**row)
 
