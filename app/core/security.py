@@ -85,7 +85,7 @@ async def get_current_user(
 
         # Fetch user details from public.users
         try:
-            user = await fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
+            user = fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
 
             if not user:
                 raise HTTPException(
@@ -129,7 +129,7 @@ async def get_current_user(
                     # Case 2: User has NO stored device ID — bind this device.
                     logger.info(f"Binding first device {device_id_header} to user {user_id}")
                     try:
-                        await execute(
+                        execute(
                             "UPDATE users SET device_id = %s WHERE id = %s",
                             (device_id_header, user_id),
                         )
@@ -191,7 +191,7 @@ async def get_optional_user(request: Request) -> Optional[Dict]:
         except HTTPException:
             return None
 
-        user = await fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
+        user = fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
         if not user:
             return None
 
@@ -218,7 +218,7 @@ async def get_current_user_no_device_check(
         payload = _resolve_token_user(token)
         user_id = payload["sub"]
 
-        user = await fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
+        user = fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
 
         if not user:
             # User exists in auth but not yet in public.users — return basic info.
