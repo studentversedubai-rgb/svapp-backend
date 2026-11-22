@@ -1,0 +1,208 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+from fastapi import HTTPException
+
+from app.modules.auth.schemas import RegisterRequest
+from app.modules.auth.service import AuthService
+
+
+def document(filename, mime_type):
+    return {"filename": filename, "mime_type": mime_type, "bytes": b"document"}
+
+
+@pytest.mark.parametrize(
+    ("expected", "document"),
+    [
+        ("Mohamed Elkholy", "Mohamed El Kholy"),
+        ("Example Student", "Example Middle Student"),
+        ("Sara Alnuaimi", "SARA AL NUAIMI"),
+        ("Mohamed Elkhouly", "Mohamed Khaled Ahmed Mahmoud Hassan Elkhouly"),
+    ],
+)
+def test_name_identity_accepts_spacing_and_middle_name_variants(expected, document):
+    assert AuthService._name_identity_matches(expected, document) is True
+
+
+def test_name_identity_rejects_different_surname():
+    assert AuthService._name_identity_matches("Example Student", "Example Different") is False
+
+
+@pytest.mark.parametrize(
+    ("expected", "document"),
+    [
+        ("American University in Dubai", "AUD"),
+        ("University of Wollongong in Dubai", "UOWD Student Card"),
+        ("Heriot-Watt University Dubai", "HWU"),
+        ("University of Birmingham Dubai", "Birmingham Dubai"),
+    ],
+)
+def test_university_identity_accepts_known_full_name_and_aliases(expected, document):
+    assert AuthService._university_identity_matches(expected, document) is True
+
+
+def test_university_identity_rejects_another_institution():
+    assert AuthService._university_identity_matches(
+        "American University in Dubai", "University of Birmingham Dubai"
+    ) is False
+
+
+def test_automated_profile_insert_falls_back_for_legacy_signup_method_constraint():
+    supabase = MagicMock()
+    execute = supabase.table.return_value.insert.return_value.execute
+    execute.side_effect = [
+        Exception("23514 users_signup_method_check"),
+        MagicMock(data=[{"id": "user-id"}]),
+    ]
+    request = RegisterRequest(
+        email="student@example.edu",
+        name="Test Student",
+        first_name="Test",
+        last_name="Student",
+        password="Password123_",
+    )
+    with patch("app.modules.auth.service.get_supabase_client", return_value=supabase):
+        AuthService()._insert_user_row_for_signup(
+            user_id="user-id",
+            payload=request,
+            age=20,
+            signup_method="automated_ai",
+            verification_status="approved",
+            personal_email="personal@example.com",
+        )
+    assert execute.call_count == 2
+    first_payload = supabase.table.return_value.insert.call_args_list[0].args[0]
+    fallback_payload = supabase.table.return_value.insert.call_args_list[1].args[0]
+    assert first_payload["signup_method"] == "automated_ai"
+    assert fallback_payload["signup_method"] == "manual_review"
+    assert fallback_payload["verification_reviewed_by"] == "automated_ai"
+
+
+class FakeClient:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.post = AsyncMock(side_effect=error, return_value=response)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_automated_signup_sends_exact_orbit_contract_and_accepts_matching_identity():
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "approved": True,
+        "errors": [],
+        "extracted": {
+            "name_from_id": "Test Student",
+            "university": "Test University Dubai",
+        },
+    }
+    client = FakeClient(response=response)
+    with patch("app.modules.auth.service.httpx.AsyncClient", return_value=client) as client_factory:
+        result = await AuthService()._verify_automated_signup(
+            enrollment_payload=document("letter.pdf", "application/pdf"),
+            student_id_payload=document("student.jpg", "image/jpeg"),
+            first_name="Test",
+            last_name="Student",
+            university="Test University Dubai",
+        )
+    assert result["approved"] is True
+    client_factory.assert_called_once_with(timeout=120.0)
+    _, kwargs = client.post.call_args
+    assert client.post.call_args.args[0].endswith("/verify")
+    assert set(kwargs["files"]) == {"student_id", "university_letter"}
+    assert kwargs["files"]["student_id"][0] == "student.jpg"
+    assert kwargs["files"]["university_letter"][0] == "letter.pdf"
+
+
+@pytest.mark.asyncio
+async def test_secure_student_number_link_allows_different_family_name_format():
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "approved": True,
+        "errors": [],
+        "warnings": ["Name format differs between university documents"],
+        "extracted": {
+            "name_from_id": "Mohamed Elkhouly",
+            "university": "University of Wollongong in Dubai",
+        },
+    }
+    with patch(
+        "app.modules.auth.service.httpx.AsyncClient",
+        return_value=FakeClient(response=response),
+    ):
+        result = await AuthService()._verify_automated_signup(
+            enrollment_payload=document("letter.pdf", "application/pdf"),
+            student_id_payload=document("student.jpg", "image/jpeg"),
+            first_name="Mohamed",
+            last_name="Khaled",
+            university="University of Wollongong in Dubai",
+        )
+    assert result["approved"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"approved": False, "errors": ["Student ID mismatch"], "extracted": {}},
+        {"approved": False, "errors": ["University mismatch"], "extracted": {}},
+    ],
+)
+async def test_automated_signup_rejects_failed_or_mismatched_documents(payload):
+    response = MagicMock(status_code=200)
+    response.json.return_value = payload
+    with patch("app.modules.auth.service.httpx.AsyncClient", return_value=FakeClient(response=response)):
+        with pytest.raises(HTTPException) as exc:
+            await AuthService()._verify_automated_signup(
+                enrollment_payload=document("letter.pdf", "application/pdf"),
+                student_id_payload=document("student.jpg", "image/jpeg"),
+                first_name="Test",
+                last_name="Student",
+                university="Test University Dubai",
+            )
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "AI_VERIFICATION_FAILED"
+    assert exc.value.detail["message"] == (
+        "Student documents could not be validated. Please upload a valid student ID and enrollment document."
+    )
+
+
+@pytest.mark.asyncio
+async def test_orbit_document_processing_failure_is_not_reported_as_an_outage():
+    response = MagicMock(status_code=502)
+    with patch("app.modules.auth.service.httpx.AsyncClient", return_value=FakeClient(response=response)):
+        with pytest.raises(HTTPException) as exc:
+            await AuthService()._verify_automated_signup(
+                enrollment_payload=document("letter.pdf", "application/pdf"),
+                student_id_payload=document("student.jpg", "image/jpeg"),
+                first_name="Test",
+                last_name="Student",
+                university="Test University Dubai",
+            )
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "AI_VERIFICATION_FAILED"
+    assert "temporarily unavailable" not in exc.value.detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_automated_signup_maps_orbit_outage_to_retryable_service_error():
+    request = httpx.Request("POST", "https://example.com/verify")
+    error = httpx.ConnectError("offline", request=request)
+    with patch("app.modules.auth.service.httpx.AsyncClient", return_value=FakeClient(error=error)):
+        with pytest.raises(HTTPException) as exc:
+            await AuthService()._verify_automated_signup(
+                enrollment_payload=document("letter.pdf", "application/pdf"),
+                student_id_payload=document("student.jpg", "image/jpeg"),
+                first_name="Test",
+                last_name="Student",
+                university="Test University Dubai",
+            )
+    assert exc.value.status_code == 503
+    assert exc.value.detail["code"] == "AI_VERIFICATION_UNAVAILABLE"

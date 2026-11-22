@@ -1,0 +1,282 @@
+{
+  "info": {
+    "name": "StudentVerse Phase 3 - Redemption",
+    "description": "QR-based redemption system endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwt_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "entitlement_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "proof_token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Claim Entitlement",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "    const response = pm.response.json();",
+              "    pm.environment.set('entitlement_id', response.entitlement_id);",
+              "    console.log('Entitlement ID:', response.entitlement_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"offer_id\": \"{{offer_id}}\",\n  \"device_id\": \"test-device-123\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/entitlements/claim",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "claim"]
+        },
+        "description": "Claim an offer to create an entitlement.\n\nBusiness Rules:\n- One entitlement per user per offer per day\n- Offer must be active and valid\n- Entitlement expires at end of day"
+      },
+      "response": []
+    },
+    {
+      "name": "2. Generate QR Proof Token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "    const response = pm.response.json();",
+              "    pm.environment.set('proof_token', response.proof_token);",
+              "    console.log('Proof Token:', response.proof_token);",
+              "    console.log('Expires At:', response.expires_at);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/entitlements/{{entitlement_id}}/proof",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "{{entitlement_id}}", "proof"]
+        },
+        "description": "Generate short-lived proof token for QR code.\n\nToken Details:\n- TTL: 30 seconds\n- Single-use\n- Stored in Redis\n- Frontend renders QR code from token"
+      },
+      "response": []
+    },
+    {
+      "name": "3. Validate Proof Token (Merchant)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"proof_token\": \"{{proof_token}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/entitlements/validate",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "validate"]
+        },
+        "description": "Validate proof token (merchant scans QR).\n\nValidation Checks:\n- Token exists in Redis\n- Entitlement is active\n- Not already used\n- Device binding\n- Time window\n\nOn Success:\n- Marks entitlement as PENDING_CONFIRMATION\n- Returns offer details"
+      },
+      "response": []
+    },
+    {
+      "name": "4. Confirm Redemption (Merchant)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entitlement_id\": \"{{entitlement_id}}\",\n  \"total_bill_amount\": 100.00,\n  \"discounted_amount\": 80.00\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/entitlements/confirm",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "confirm"]
+        },
+        "description": "Confirm redemption with amount capture.\n\nMerchant Flow:\n1. Scan QR (validate endpoint)\n2. Enter bill amount\n3. Confirm redemption (this endpoint)\n\nOn Success:\n- Creates redemption record\n- Marks entitlement as USED\n- Deletes Redis token\n- Sends notification to student"
+      },
+      "response": []
+    },
+    {
+      "name": "5. Void Redemption",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entitlement_id\": \"{{entitlement_id}}\",\n  \"reason\": \"Customer returned item\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/entitlements/void",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "void"]
+        },
+        "description": "Void a redemption within 2-hour window.\n\nBusiness Rules:\n- Only USED entitlements can be voided\n- Must be within 2 hours of redemption\n- Same day only\n- Requires reason (audit log)"
+      },
+      "response": []
+    },
+    {
+      "name": "6. Get My Entitlements",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/entitlements/my?state=active",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "my"],
+          "query": [
+            {
+              "key": "state",
+              "value": "active",
+              "description": "Filter by state (active, used, voided, expired)"
+            }
+          ]
+        },
+        "description": "Get current user's entitlements.\n\nQuery Params:\n- state: Filter by state (active, used, voided, expired)"
+      },
+      "response": []
+    },
+    {
+      "name": "7. Get User Savings Summary",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/entitlements/savings",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "savings"]
+        },
+        "description": "Get user's total savings summary.\n\nReturns:\n- Total redemptions\n- Total savings\n- Total spending"
+      },
+      "response": []
+    },
+    {
+      "name": "Test: Expired Token",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"proof_token\": \"expired-or-invalid-token\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/entitlements/validate",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "validate"]
+        },
+        "description": "Test validation with expired/invalid token.\n\nExpected Response:\n- success: false\n- status: FAIL\n- reason: Invalid or expired token"
+      },
+      "response": []
+    },
+    {
+      "name": "Test: Daily Limit",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"offer_id\": \"{{offer_id}}\",\n  \"device_id\": \"test-device-123\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/entitlements/claim",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "claim"]
+        },
+        "description": "Test daily claim limit.\n\nRun this twice for the same offer on the same day.\n\nExpected on second attempt:\n- 400 Bad Request\n- Detail: Daily claim limit reached for this offer"
+      },
+      "response": []
+    },
+    {
+      "name": "Test: Void Outside Window",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"entitlement_id\": \"old-entitlement-id\",\n  \"reason\": \"Testing void window\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/entitlements/void",
+          "host": ["{{base_url}}"],
+          "path": ["entitlements", "void"]
+        },
+        "description": "Test void outside 2-hour window.\n\nUse an entitlement that was redeemed more than 2 hours ago.\n\nExpected Response:\n- 400 Bad Request\n- Detail: Void window expired"
+      },
+      "response": []
+    }
+  ]
+}

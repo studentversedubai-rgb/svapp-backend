@@ -1,0 +1,3 @@
+"""
+Online Deals Module
+"""
