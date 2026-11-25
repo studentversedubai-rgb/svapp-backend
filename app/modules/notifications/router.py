@@ -1,8 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Any, Dict, Literal, Optional
-# Fixed imports: core/database exports get_supabase_client() and core/security exports get_current_user()
-from app.core.database import get_supabase_client
+from app.core.database import fetch_one, execute
 from app.core.security import get_current_user
 from app.core.redis import redis_manager
 from app.core.admin_auth import require_internal_admin
@@ -66,43 +65,25 @@ async def register_push_token(
         if payload.userId and payload.userId != current_user_id:
             raise HTTPException(status_code=403, detail="Cannot register token for another user")
 
-        supabase = get_supabase_client()
-        if not supabase:
-            raise HTTPException(status_code=500, detail="Database connection unavailable")
+        existing = fetch_one(
+            "SELECT id FROM user_push_tokens WHERE user_id = %s AND push_token = %s",
+            (current_user_id, payload.token)
+        )
 
-        # Check if token already exists for this user
-        response = supabase.table("user_push_tokens").select("id").eq(
-            "user_id", current_user_id
-        ).eq("push_token", payload.token).execute()
-
-        if response.data and len(response.data) > 0:
-            # Token exists, update it
-            token_id = response.data[0]["id"]
-            update_response = supabase.table("user_push_tokens").update(
-                {"platform": payload.platform}
-            ).eq("id", token_id).execute()
-
-            if getattr(update_response, "error", None):
-                logger.error(f"Error updating push token: {update_response.error}")
-                raise HTTPException(status_code=500, detail="Failed to update push token")
-
+        if existing:
+            token_id = existing["id"]
+            execute(
+                "UPDATE user_push_tokens SET platform = %s WHERE id = %s",
+                (payload.platform, token_id)
+            )
             logger.info(f"Updated push token for user {current_user_id}")
             return {"success": True, "message": "Push token updated", "tokenId": token_id}
         else:
-            # Create new token entry
-            insert_response = supabase.table("user_push_tokens").insert(
-                {
-                    "user_id": current_user_id,
-                    "push_token": payload.token,
-                    "platform": payload.platform,
-                }
-            ).execute()
-
-            if getattr(insert_response, "error", None):
-                logger.error(f"Error inserting push token: {insert_response.error}")
-                raise HTTPException(status_code=500, detail="Failed to register push token")
-
-            token_id = insert_response.data[0]["id"] if insert_response.data else None
+            new_row = fetch_one(
+                "INSERT INTO user_push_tokens (user_id, push_token, platform) VALUES (%s, %s, %s) RETURNING id",
+                (current_user_id, payload.token, payload.platform)
+            )
+            token_id = new_row["id"] if new_row else None
             logger.info(f"Registered new push token for user {current_user_id}")
             return {
                 "success": True,
@@ -124,28 +105,22 @@ async def register_application_push_token(payload: ApplicationPushTokenRegister)
     if not user_id:
         raise HTTPException(status_code=401, detail="Notification registration session expired")
 
-    supabase = get_supabase_client()
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Database connection unavailable")
-
-    existing = (
-        supabase.table("user_push_tokens")
-        .select("id")
-        .eq("push_token", payload.token)
-        .limit(1)
-        .execute()
+    existing = fetch_one(
+        "SELECT id FROM user_push_tokens WHERE push_token = %s LIMIT 1",
+        (payload.token,)
     )
-    values = {
-        "user_id": str(user_id),
-        "push_token": payload.token,
-        "platform": payload.platform,
-    }
-    if existing.data:
-        token_id = existing.data[0]["id"]
-        supabase.table("user_push_tokens").update(values).eq("id", token_id).execute()
+    if existing:
+        token_id = existing["id"]
+        execute(
+            "UPDATE user_push_tokens SET user_id = %s, platform = %s WHERE id = %s",
+            (str(user_id), payload.platform, token_id)
+        )
     else:
-        created = supabase.table("user_push_tokens").insert(values).execute()
-        token_id = created.data[0]["id"] if created.data else None
+        created = fetch_one(
+            "INSERT INTO user_push_tokens (user_id, push_token, platform) VALUES (%s, %s, %s) RETURNING id",
+            (str(user_id), payload.token, payload.platform)
+        )
+        token_id = created["id"] if created else None
 
     redis_manager.delete(registration_key)
     return {"success": True, "message": "Push token registered", "tokenId": token_id}
@@ -165,20 +140,13 @@ async def update_push_token(
         if user_id != current_user_id:
             raise HTTPException(status_code=403, detail="Cannot update token for another user")
 
-        supabase = get_supabase_client()
-        if not supabase:
-            raise HTTPException(status_code=500, detail="Database connection unavailable")
-
         if payload.isEnabled is False:
-            response = supabase.table("user_push_tokens").delete().eq("user_id", user_id).execute()
+            execute("DELETE FROM user_push_tokens WHERE user_id = %s", (user_id,))
         else:
-            response = supabase.table("user_push_tokens").update(
-                {"push_token": payload.token, "platform": payload.platform}
-            ).eq("user_id", user_id).execute()
-
-        if getattr(response, "error", None):
-            logger.error(f"Error updating push token: {response.error}")
-            raise HTTPException(status_code=500, detail="Failed to update push token")
+            execute(
+                "UPDATE user_push_tokens SET push_token = %s, platform = %s WHERE user_id = %s",
+                (payload.token, payload.platform, user_id)
+            )
 
         return {"success": True, "message": "Push token updated"}
 
@@ -202,16 +170,7 @@ async def delete_push_token(
         if user_id != current_user_id:
             raise HTTPException(status_code=403, detail="Cannot delete token for another user")
 
-        supabase = get_supabase_client()
-        if not supabase:
-            raise HTTPException(status_code=500, detail="Database connection unavailable")
-
-        response = supabase.table("user_push_tokens").delete().eq("user_id", user_id).execute()
-
-        if getattr(response, "error", None):
-            logger.error(f"Error deleting push token: {response.error}")
-            raise HTTPException(status_code=500, detail="Failed to delete push token")
-
+        execute("DELETE FROM user_push_tokens WHERE user_id = %s", (user_id,))
         return {"success": True, "message": "Push token removed"}
 
     except HTTPException:

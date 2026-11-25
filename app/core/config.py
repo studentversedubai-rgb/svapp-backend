@@ -28,27 +28,29 @@ class Settings(BaseSettings):
     PORT: int = 8000
     
     # ================================
-    # SUPABASE
+    # AZURE POSTGRESQL
     # ================================
-    SUPABASE_URL: str
-    SUPABASE_ANON_KEY: str = ""
-    SUPABASE_SERVICE_KEY: str
+    DATABASE_URL: str
+
+    # ================================
+    # AZURE BLOB STORAGE
+    # ================================
+    AZURE_STORAGE_ACCOUNT_NAME: str = ""
+    AZURE_STORAGE_ACCOUNT_KEY: str = ""
+    AZURE_STORAGE_CONTAINER_BASE_URL: str = ""
     VERIFICATION_BUCKET_NAME: str = "user-verification-documents"
-    
+    PROFILE_IMAGE_BUCKET_NAME: str = "user-profile-images"
+
     # ================================
-    # JWT
-    # ================================
-       # ================================
     # JWT
     # ================================
     JWT_SECRET: str = ""
-    SUPABASE_JWT_SECRET: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
 
     @property
     def jwt_secret_key(self) -> str:
-        """Returns SUPABASE_JWT_SECRET if present, else JWT_SECRET"""
-        return self.SUPABASE_JWT_SECRET or self.JWT_SECRET
+        """Returns JWT_SECRET"""
+        return self.JWT_SECRET
 
     
     # ================================

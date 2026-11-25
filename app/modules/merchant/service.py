@@ -21,7 +21,7 @@ os.environ.setdefault("PASSLIB_BUILTIN_BCRYPT", "enabled")
 
 from passlib.hash import bcrypt as bcrypt_hasher # pyright: ignore
 
-from app.core.database import get_supabase_client
+from app.core.database import fetch_one, fetch_all, execute
 from app.core.redis import redis_manager
 from app.modules.merchant.schemas import (
     MerchantValidateResponse,
@@ -46,23 +46,21 @@ class MerchantService:
     
     def __init__(self):
         """Initialize service"""
-        self.supabase = get_supabase_client()
         self.redis = redis_manager
 
     # ================================
     # SHIFT SESSION MANAGEMENT
     # ================================
 
-    async def shift_login(self, merchant_id: str, pin: str) -> ShiftLoginResponse:
+    def shift_login(self, merchant_id: str, pin: str) -> ShiftLoginResponse:
         """
         Authenticate a merchant for a shift and issue a session token.
         """
-        merchant = await self._get_merchant(merchant_id)
+        merchant = self._get_merchant(merchant_id)
         if not merchant:
             raise ValueError("Merchant not found")
-
         # Verify PIN (handles bcrypt & auto-upgrades legacy SHA-256)
-        if not await self._verify_merchant_pin(merchant_id, pin):
+        if not self._verify_merchant_pin(merchant_id, pin):
             raise ValueError("Invalid PIN")
 
         # Generate secure random token
@@ -82,14 +80,14 @@ class MerchantService:
             merchant_name=merchant.get("name", "Unknown Merchant")
         )
 
-    async def shift_logout(self, session_token: str) -> None:
+    def shift_logout(self, session_token: str) -> None:
         """
         End a merchant shift session by removing the Redis key.
         """
         redis_key = f"{REDIS_PREFIX_SHIFT_SESSION}{session_token}"
         self.redis.delete(redis_key)
 
-    async def _get_session_merchant(self, session_token: str) -> str:
+    def _get_session_merchant(self, session_token: str) -> str:
         """
         Validate shift session token and return merchant_id.
         Raises ValueError if session is invalid or expired.
@@ -108,7 +106,7 @@ class MerchantService:
     # VALIDATE QR TOKEN
     # ================================
     
-    async def validate_proof_token(self, code: str, session_token: str) -> MerchantValidateResponse:
+    def validate_proof_token(self, code: str, session_token: str) -> MerchantValidateResponse:
         """
         Validate student's QR proof token
         
@@ -119,7 +117,7 @@ class MerchantService:
             Validation response with PASS/FAIL status
         """
         try:
-            await self._get_session_merchant(session_token)
+            self._get_session_merchant(session_token)
             
             if len(code) <= 6:
                 # It's definitely a backup code
@@ -142,7 +140,7 @@ class MerchantService:
             entitlement_id = token_data['entitlement_id']
             
             # Get entitlement
-            entitlement = await self._get_entitlement(entitlement_id)
+            entitlement = self._get_entitlement(entitlement_id)
             if not entitlement:
                 return MerchantValidateResponse(
                     success=False,
@@ -181,7 +179,7 @@ class MerchantService:
                 )
             
             # Get offer details
-            offer = await self._get_offer(entitlement['offer_id'])
+            offer = self._get_offer(entitlement['offer_id'])
             if not offer:
                 return MerchantValidateResponse(
                     success=False,
@@ -190,19 +188,19 @@ class MerchantService:
                 )
             
             # Get merchant details
-            merchant = await self._get_merchant(offer['merchant_id'])
+            merchant = self._get_merchant(offer['merchant_id'])
             merchant_name = merchant['name'] if merchant else "Unknown Merchant"
             
             # Get user details
-            user = await self._get_user(entitlement['user_id'])
+            user = self._get_user(entitlement['user_id'])
             student_name = user.get('full_name', 'Student') if user else "Student"
 
 
             # Mark entitlement as PENDING_CONFIRMATION so concurrent scans are rejected
-            self.supabase.table('entitlements').update({
-                'state': EntitlementState.PENDING_CONFIRMATION.value,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }).eq('id', str(entitlement_id)).execute()
+            execute(
+                "UPDATE entitlements SET state = %s, updated_at = %s WHERE id = %s",
+                (EntitlementState.PENDING_CONFIRMATION.value, datetime.now(timezone.utc).isoformat(), str(entitlement_id))
+            )
 
             # Return PASS with details
             return MerchantValidateResponse(
@@ -239,7 +237,7 @@ class MerchantService:
     # CONFIRM REDEMPTION
     # ================================
     
-    async def confirm_redemption(
+    def confirm_redemption(
         self,
         code: str,
         total_bill_amount: Decimal,
@@ -260,7 +258,7 @@ class MerchantService:
             ValueError: If validation fails
         """
         # Get token data from Redis
-        session_merchant_id = await self._get_session_merchant(session_token)
+        session_merchant_id = self._get_session_merchant(session_token)
         if len(code) <= 6:
             redis_key = f"{REDIS_PREFIX_BACKUP_CODE}{code.upper()}"
         else:
@@ -275,7 +273,7 @@ class MerchantService:
         entitlement_id = token_data['entitlement_id']
         
         # Get entitlement
-        entitlement = await self._get_entitlement(entitlement_id)
+        entitlement = self._get_entitlement(entitlement_id)
         if not entitlement:
             raise ValueError("Entitlement not found")
         
@@ -291,12 +289,12 @@ class MerchantService:
                 raise ValueError(f"Entitlement cannot be confirmed (state: {entitlement['state']})")
         
         # Get offer
-        offer = await self._get_offer(entitlement['offer_id'])
+        offer = self._get_offer(entitlement['offer_id'])
         if not offer:
             raise ValueError("Offer not found")
         
         # Validate merchant PIN
-        merchant = await self._get_merchant(offer['merchant_id'])
+        merchant = self._get_merchant(offer['merchant_id'])
         if not merchant:
             raise ValueError("Merchant not found")
         
@@ -341,18 +339,19 @@ class MerchantService:
             'is_voided': False
         }
         
-        result = self.supabase.table('redemptions').insert(redemption_data).execute()
+        keys = list(redemption_data.keys())
+        col_str = ", ".join(keys)
+        val_str = ", ".join(["%s"] * len(keys))
+        redemption = fetch_one(f"INSERT INTO redemptions ({col_str}) VALUES ({val_str}) RETURNING *", tuple(redemption_data.values()))
         
-        if not result.data:
+        if not redemption:
             raise ValueError("Failed to create redemption")
         
-        redemption = result.data[0]
-        
         # Mark entitlement as CONFIRMED
-        self.supabase.table('entitlements').update({
-            'state': EntitlementState.CONFIRMED.value,
-            'used_at': datetime.now(timezone.utc).isoformat()
-        }).eq('id', str(entitlement_id)).execute()
+        execute(
+            "UPDATE entitlements SET state = %s, used_at = %s WHERE id = %s",
+            (EntitlementState.CONFIRMED.value, datetime.now(timezone.utc).isoformat(), str(entitlement_id))
+        )
         
         # Delete BOTH QR token and backup code from Redis
         proof_tok = token_data.get('proof_token') or (code if len(code) > 6 else None)
@@ -363,7 +362,7 @@ class MerchantService:
             self.redis.delete(f"{REDIS_PREFIX_BACKUP_CODE}{backup_c.upper()}")
         
         # Log analytics
-        await self._log_analytics_event('redemption_confirmed', {
+        self._log_analytics_event('redemption_confirmed', {
             'redemption_id': redemption['id'],
             'merchant_id': str(offer['merchant_id']),
             'offer_id': str(entitlement['offer_id']),
@@ -386,7 +385,7 @@ class MerchantService:
     # VOID REDEMPTION
     # ================================
     
-    async def void_redemption(
+    def void_redemption(
         self,
         redemption_id: UUID,
         merchant_pin: str,
@@ -407,7 +406,7 @@ class MerchantService:
             ValueError: If validation fails
         """
         # Get redemption
-        redemption = await self._get_redemption(redemption_id)
+        redemption = self._get_redemption(redemption_id)
         if not redemption:
             raise ValueError("Redemption not found")
         
@@ -415,7 +414,7 @@ class MerchantService:
             raise ValueError("Redemption already voided")
         
         # Validate merchant PIN
-        if not await self._verify_merchant_pin(redemption['merchant_id'], merchant_pin):
+        if not self._verify_merchant_pin(redemption['merchant_id'], merchant_pin):
             raise ValueError("Invalid merchant PIN")
         
         # Check void window (2 hours)
@@ -431,20 +430,19 @@ class MerchantService:
             raise ValueError("Voiding only allowed on same day of redemption")
         
         # Mark redemption as voided
-        self.supabase.table('redemptions').update({
-            'is_voided': True,
-            'voided_at': now.isoformat(),
-            'void_reason': reason
-        }).eq('id', str(redemption_id)).execute()
+        execute(
+            "UPDATE redemptions SET is_voided = true, voided_at = %s, void_reason = %s WHERE id = %s",
+            (now.isoformat(), reason, str(redemption_id))
+        )
         
-        # Restore entitlement to ACTIVE (if same day)
-        self.supabase.table('entitlements').update({
-            'state': EntitlementState.CANCELLED.value,
-            'voided_at': now.isoformat()
-        }).eq('id', str(redemption['entitlement_id'])).execute()
+        # Restore entitlement to CANCELLED
+        execute(
+            "UPDATE entitlements SET state = %s, voided_at = %s WHERE id = %s",
+            (EntitlementState.CANCELLED.value, now.isoformat(), str(redemption['entitlement_id']))
+        )
         
         # Log analytics
-        await self._log_analytics_event('redemption_voided', {
+        self._log_analytics_event('redemption_voided', {
             'redemption_id': str(redemption_id),
             'reason': reason
         })
@@ -460,45 +458,39 @@ class MerchantService:
     # HELPER METHODS
     # ================================
     
-    async def _get_entitlement(self, entitlement_id: str) -> Optional[Dict]:
+    def _get_entitlement(self, entitlement_id: str) -> Optional[Dict]:
         """Get entitlement by ID"""
-        result = self.supabase.table('entitlements').select('*').eq('id', entitlement_id).execute()
-        return result.data[0] if result.data else None
+        return fetch_one("SELECT * FROM entitlements WHERE id = %s", (str(entitlement_id),))
     
-    async def _get_offer(self, offer_id: str) -> Optional[Dict]:
+    def _get_offer(self, offer_id: str) -> Optional[Dict]:
         """Get offer by ID"""
-        result = self.supabase.table('offers').select('*').eq('id', offer_id).execute()
-        return result.data[0] if result.data else None
+        return fetch_one("SELECT * FROM offers WHERE id = %s", (str(offer_id),))
     
-    async def _get_merchant(self, merchant_id: str) -> Optional[Dict]:
+    def _get_merchant(self, merchant_id: str) -> Optional[Dict]:
         """Get merchant by ID"""
-        result = self.supabase.table('merchants').select('*').eq('id', merchant_id).execute()
-        return result.data[0] if result.data else None
+        return fetch_one("SELECT * FROM merchants WHERE id = %s", (str(merchant_id),))
     
-    async def _get_user(self, user_id: str) -> Optional[Dict]:
+    def _get_user(self, user_id: str) -> Optional[Dict]:
         """Get user profile"""
         try:
-            result = self.supabase.table('users').select('first_name, last_name, name').eq('id', user_id).execute()
-            if result.data:
-                u = result.data[0]
-                # Build display name from available fields
+            u = fetch_one("SELECT first_name, last_name, name FROM users WHERE id = %s", (str(user_id),))
+            if u:
                 full_name = u.get('name') or ' '.join(filter(None, [u.get('first_name'), u.get('last_name')])) or 'Student'
                 return {'full_name': full_name}
             return None
-        except:
+        except Exception:
             return None
     
-    async def _get_redemption(self, redemption_id: UUID) -> Optional[Dict]:
+    def _get_redemption(self, redemption_id: UUID) -> Optional[Dict]:
         """Get redemption by ID"""
-        result = self.supabase.table('redemptions').select('*').eq('id', str(redemption_id)).execute()
-        return result.data[0] if result.data else None
+        return fetch_one("SELECT * FROM redemptions WHERE id = %s", (str(redemption_id),))
 
 
-    async def _verify_merchant_pin(self, merchant_id: str, pin: str) -> bool:
+    def _verify_merchant_pin(self, merchant_id: str, pin: str) -> bool:
         """
         Verify merchant PIN with automatic upgrade from SHA-256 to bcrypt.
         """
-        merchant = await self._get_merchant(merchant_id)
+        merchant = self._get_merchant(merchant_id)
         if not merchant:
             return False
 
@@ -518,7 +510,7 @@ class MerchantService:
             if hmac.compare_digest(pin_hash, stored_hash.lower()):
                 # PIN is correct - AUTOMATICALLY UPGRADE to bcrypt
                 new_hash = bcrypt_hasher.hash(pin)
-                await self._upgrade_merchant_pin_hash(merchant_id, new_hash)
+                self._upgrade_merchant_pin_hash(merchant_id, new_hash)
                 logger.info(f"Auto-upgraded PIN hash for merchant {merchant_id} from SHA-256 to bcrypt")
                 return True
             return False
@@ -528,12 +520,10 @@ class MerchantService:
         return False
 
 
-    async def _upgrade_merchant_pin_hash(self, merchant_id: str, new_hash: str) -> None:
+    def _upgrade_merchant_pin_hash(self, merchant_id: str, new_hash: str) -> None:
         """Upgrade merchant's PIN hash to bcrypt."""
         try:
-            self.supabase.table("merchants").update({
-                "pin_hash": new_hash
-            }).eq("id", merchant_id).execute()
+            execute("UPDATE merchants SET pin_hash = %s WHERE id = %s", (new_hash, str(merchant_id)))
         except Exception as e:
             logger.error(f"Failed to upgrade PIN hash for merchant {merchant_id}: {e}")   
 
@@ -594,14 +584,13 @@ class MerchantService:
 
         return discount_amount, final_amount
     
-    async def _log_analytics_event(self, event_type: str, event_data: Dict):
+    def _log_analytics_event(self, event_type: str, event_data: Dict):
         """Log analytics event"""
         try:
-            self.supabase.table('analytics_events').insert({
-                'event_type': event_type,
-                'event_data': event_data,
-                'created_at': datetime.now(timezone.utc).isoformat()
-            }).execute()
+            execute(
+                "INSERT INTO analytics_events (event_type, event_data, created_at) VALUES (%s, %s::jsonb, %s)",
+                (event_type, json.dumps(event_data), datetime.now(timezone.utc).isoformat())
+            )
         except Exception as e:
             logger.warning(f"Failed to log analytics event: {e}")
 

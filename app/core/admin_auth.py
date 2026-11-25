@@ -26,8 +26,9 @@ async def require_internal_admin(
             timestamp = int(x_admin_timestamp)
         except ValueError:
             timestamp = 0
+        secret = getattr(settings, "JWT_SECRET", None) or getattr(settings, "SUPABASE_SERVICE_KEY", "fallback-secret")
         expected = hmac.new(
-            settings.SUPABASE_SERVICE_KEY.encode(),
+            secret.encode(),
             x_admin_timestamp.encode(),
             hashlib.sha256,
         ).hexdigest()

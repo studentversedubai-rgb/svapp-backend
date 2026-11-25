@@ -8,7 +8,7 @@ CRITICAL: No hallucinations - only real partner data.
 import re
 import logging
 from typing import List, Dict, Any, Optional
-from app.core.database import get_supabase_client
+from app.core.database import fetch_all
 from app.modules.tickets.service import TicketService
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,7 @@ class OfferRetrieval:
     """
     
     def __init__(self):
-        """Initialize with Supabase client"""
-        self.supabase = get_supabase_client()
+        pass
     
     def extract_keywords(self, message: str) -> List[str]:
         """
@@ -87,24 +86,22 @@ class OfferRetrieval:
             keywords = self.extract_keywords(intent)
             
             # Build base query with merchant join
-            query = self.supabase.table("offers").select(
-                "*, merchant:merchants(*), category:categories(*)"
-            )
+            sql = """
+                SELECT o.*, row_to_json(m.*) as merchant, row_to_json(c.*) as category
+                FROM offers o
+                JOIN merchants m ON m.id = o.merchant_id AND m.is_active = true
+                LEFT JOIN categories c ON c.id = o.category_id
+                WHERE o.is_active = true
+            """
+            offers_data = fetch_all(sql)
             
-            # Filter: only active offers from active merchants
-            query = query.eq("is_active", True)
-            query = query.eq("merchants.is_active", True)
-            
-            # Execute query
-            result = query.execute()
-            
-            if not result.data:
+            if not offers_data:
                 logger.info("No offers found in database")
                 return []
             
             # Score offers based on keyword matching
             scored_offers = []
-            for offer in result.data:
+            for offer in offers_data:
                 score = self._calculate_relevance_score(offer, keywords)
                 if score > 0:  # Only include if at least one keyword matches
                     offer['_relevance_score'] = score
@@ -217,16 +214,15 @@ class OfferRetrieval:
             Matching offers
         """
         try:
-            query = self.supabase.table("offers").select(
-                "*, merchant:merchants(*), category:categories(*)"
-            )
-            
-            query = query.eq("is_active", True)
-            query = query.in_("category.slug", categories)
-            query = query.limit(limit)
-            
-            result = query.execute()
-            return result.data
+            sql = """
+                SELECT o.*, row_to_json(m.*) as merchant, row_to_json(c.*) as category
+                FROM offers o
+                JOIN merchants m ON m.id = o.merchant_id AND m.is_active = true
+                JOIN categories c ON c.id = o.category_id AND c.slug = ANY(%s)
+                WHERE o.is_active = true
+                LIMIT %s
+            """
+            return fetch_all(sql, (categories, limit))
             
         except Exception as e:
             logger.error(f"Error searching by category: {e}")
@@ -271,16 +267,15 @@ class OfferRetrieval:
             Recommended offers
         """
         try:
-            query = self.supabase.table("offers").select(
-                "*, merchant:merchants(*), category:categories(*)"
-            )
-            
-            query = query.eq("is_active", True)
-            query = query.eq("is_featured", True)
-            query = query.limit(limit)
-            
-            result = query.execute()
-            return result.data
+            sql = """
+                SELECT o.*, row_to_json(m.*) as merchant, row_to_json(c.*) as category
+                FROM offers o
+                JOIN merchants m ON m.id = o.merchant_id AND m.is_active = true
+                LEFT JOIN categories c ON c.id = o.category_id
+                WHERE o.is_active = true AND o.is_featured = true
+                LIMIT %s
+            """
+            return fetch_all(sql, (limit,))
             
         except Exception as e:
             logger.error(f"Error getting recommended offers: {e}")
